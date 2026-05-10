@@ -1,12 +1,16 @@
 // Example: Bun server using luv-js for both backend chat completion and as a
 // CORS-friendly proxy for browser clients. Run with:
 //
-//   set -a && . ../../.env && set +a && bun run examples/server.ts
+//   bun run example:server     (from lib/js/)
 //
 // Then:
 //   curl -X POST http://localhost:3000/chat \
 //     -H 'content-type: application/json' \
 //     -d '{"text":"hi"}'
+//
+// Bind address: 0.0.0.0 so the host machine can reach the server when this
+// runs inside a devcontainer. VS Code typically auto-forwards port 3000;
+// see .devcontainer/devcontainer.json `forwardPorts` if it doesn't.
 
 import { send, sendStream } from "../src/index.ts";
 
@@ -18,7 +22,9 @@ if (!apiKey) {
 
 Bun.serve({
   port: 3000,
+  hostname: "0.0.0.0",
   routes: {
+    "/": () => new Response(Bun.file(`${import.meta.dir}/browser/index.html`)),
     "/chat": {
       POST: async (req) => {
         const { text } = (await req.json()) as { text: string };
@@ -57,4 +63,4 @@ Bun.serve({
   },
 });
 
-console.log("listening on http://localhost:3000");
+console.log("listening on http://0.0.0.0:3000");
