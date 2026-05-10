@@ -1,0 +1,62 @@
+{
+  "starting_conversation": [
+    { "role": "user", "text": "What's the weather in Tokyo?" }
+  ],
+  "tools": [
+    {
+      "name": "lookup_weather",
+      "description": "Returns current weather for a city",
+      "input_schema": {
+        "type": "object",
+        "properties": { "city": { "type": "string" } },
+        "required": ["city"]
+      }
+    }
+  ],
+  "tool_handlers": {
+    "lookup_weather": { "ok": true, "content": "{\"temp_c\":18,\"condition\":\"sunny\"}" }
+  },
+  "provider_replies": [
+    {
+      "message": {
+        "role": "assistant",
+        "text": "",
+        "toolCalls": [
+          {
+            "id": "call_abc123",
+            "name": "lookup_weather",
+            "arguments": { "city": "Tokyo" }
+          }
+        ]
+      },
+      "stopReason": "tool_use"
+    },
+    {
+      "message": { "role": "assistant", "text": "It's 18°C and sunny in Tokyo." },
+      "stopReason": "end_turn"
+    }
+  ],
+  "max_iterations": 5,
+  "expected_final_conversation": [
+    { "role": "user", "text": "What's the weather in Tokyo?" },
+    {
+      "role": "assistant",
+      "text": "",
+      "toolCalls": [
+        {
+          "id": "call_abc123",
+          "name": "lookup_weather",
+          "arguments": { "city": "Tokyo" }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "callId": "call_abc123",
+      "result": { "ok": true, "content": "{\"temp_c\":18,\"condition\":\"sunny\"}" }
+    },
+    { "role": "assistant", "text": "It's 18°C and sunny in Tokyo." }
+  ],
+  "expected_reason": "end_turn",
+  "expected_iterations": 2
+}

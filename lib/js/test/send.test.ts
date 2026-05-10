@@ -10,21 +10,21 @@ async function loadFixture(path: string): Promise<Uint8Array> {
 
 interface CapturedRequest {
   url: string;
-  method?: string;
+  method: string | undefined;
   headers: Headers;
   body: Uint8Array;
 }
 
 function makeMockFetch(
   status: number,
-  body: BodyInit,
+  body: BodyInit | Uint8Array,
   capture?: { value: CapturedRequest | null },
 ): typeof fetch {
-  return async (input: RequestInfo | URL, init?: RequestInit) => {
+  const impl = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     let bodyBytes: Uint8Array;
     if (init?.body instanceof Uint8Array) {
-      bodyBytes = init.body;
+      bodyBytes = init.body as Uint8Array;
     } else if (typeof init?.body === "string") {
       bodyBytes = new TextEncoder().encode(init.body);
     } else {
@@ -38,8 +38,9 @@ function makeMockFetch(
         body: bodyBytes,
       };
     }
-    return new Response(body, { status });
+    return new Response(body as BodyInit, { status });
   };
+  return impl as typeof fetch;
 }
 
 test("send: round-trips 001 fixture into assistant Reply with end_turn", async () => {
@@ -55,6 +56,7 @@ test("send: round-trips 001 fixture into assistant Reply with end_turn", async (
     { fetch: makeMockFetch(200, fixture) },
   );
   expect(reply.message.role).toBe("assistant");
+  if (reply.message.role !== "assistant") throw new Error("expected assistant");
   expect(reply.message.text.length).toBeGreaterThan(0);
   expect(reply.stopReason).toBe("end_turn");
 });
@@ -114,7 +116,7 @@ test("send: non-200 throws HttpError carrying the body", async () => {
   ).rejects.toThrow(HttpError);
 });
 
-test("send: malformed JSON response surfaces a WasmCallError", async () => {
+test("send: malformed JSON response surfaces a parse error", async () => {
   await expect(
     send(
       {
@@ -124,5 +126,5 @@ test("send: malformed JSON response surfaces a WasmCallError", async () => {
       },
       { fetch: makeMockFetch(200, "not json at all") },
     ),
-  ).rejects.toThrow(/luv_parse_reply/);
+  ).rejects.toThrow();
 });

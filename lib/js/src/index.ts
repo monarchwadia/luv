@@ -16,3 +16,5 @@ export type {
 
 export { send, HttpError } from "./send.ts";
 export { sendStream } from "./send_stream.ts";
+export { runAgent } from "./agent.ts";
+export { openaiProvider, type OpenAIProviderConfig } from "./provider_openai.ts";

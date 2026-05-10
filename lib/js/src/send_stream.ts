@@ -1,9 +1,8 @@
-// Streaming send: feed SSE chunks through the wasm decoder, expose events.
-// Same wasm module as send(); separate code path for the body draining.
+// Streaming send: build wire JSON via the morphism, fetch, drain SSE
+// through the pure-TS decoder, expose events.
 
-import { decodeEvents, encodeSendRequestStreaming } from "./codec.ts";
-import { callWithBytesInOut, WasmCallError } from "./bridge.ts";
-import { getWasm, type LuvWasm } from "./wasm.ts";
+import { toOpenAI } from "./morphism.ts";
+import { SseDecoder } from "./sse_decoder.ts";
 import { HttpError, type SendInternalOptions } from "./send.ts";
 import type {
   Event,
@@ -24,7 +23,6 @@ export function sendStream(
   internal?: SendInternalOptions,
 ): LuvStream {
   const internalCtl = new AbortController();
-  // Bridge external signal → our internal controller.
   if (opts.signal) {
     if (opts.signal.aborted) internalCtl.abort();
     else opts.signal.addEventListener("abort", () => internalCtl.abort(), { once: true });
@@ -61,28 +59,22 @@ export function sendStream(
     if (err) opts.onError?.(err);
     while (waiters.length > 0) {
       const w = waiters.shift()!;
-      if (err) w({ value: undefined, done: true });
-      else w({ value: undefined, done: true });
+      w({ value: undefined, done: true });
     }
   }
 
   const donePromise: Promise<Reply> = (async () => {
-    const wasm = await getWasm(internal);
     const fetchImpl = internal?.fetch ?? globalThis.fetch.bind(globalThis);
-    const decoderHandle = wasm.luv_decoder_new();
-    if (decoderHandle === 0) throw new WasmCallError("luv_decoder_new", -1);
-
-    try {
-      await drainStream(opts, internalCtl, fetchImpl, wasm, decoderHandle, pushEvent);
-    } finally {
-      wasm.luv_decoder_free(decoderHandle);
-    }
+    await drainStream(opts, internalCtl, fetchImpl, pushEvent);
   })().then(
-    () => {
+    (): Reply => {
       finishProducer(null);
       const stopReason = finalStopReason ?? "other";
+      if (assistantRole !== "assistant") {
+        throw new Error(`sendStream: unexpected role from stream: ${assistantRole}`);
+      }
       return {
-        message: { role: assistantRole, text: assembledText },
+        message: { role: "assistant", text: assembledText },
         stopReason,
       };
     },
@@ -110,7 +102,6 @@ export function sendStream(
     },
   };
 
-  // Suppress unhandled-rejection if the consumer never awaits .done.
   donePromise.catch(() => {});
 
   return {
@@ -129,17 +120,15 @@ async function drainStream(
   opts: SendStreamOptions,
   ctl: AbortController,
   fetchImpl: typeof fetch,
-  wasm: LuvWasm,
-  decoderHandle: number,
   emit: (e: Event) => void,
 ): Promise<void> {
-  const requestBytes = encodeSendRequestStreaming(opts);
-  const wireBytes = callWithBytesInOut(
-    wasm,
-    "luv_build_request",
-    wasm.luv_build_request,
-    requestBytes,
-  );
+  const wire = toOpenAI({
+    conversation: opts.conversation,
+    model: opts.model,
+    ...(opts.maxTokens !== undefined && { maxTokens: opts.maxTokens }),
+    ...(opts.temperature !== undefined && { temperature: opts.temperature }),
+    stream: true,
+  });
 
   const baseUrl = opts.baseUrl ?? "https://api.openai.com";
   const url = `${baseUrl}/v1/chat/completions`;
@@ -151,7 +140,7 @@ async function drainStream(
       "Content-Type": "application/json",
       Accept: "text/event-stream",
     },
-    body: wireBytes as BodyInit,
+    body: JSON.stringify(wire),
     signal: ctl.signal,
   });
 
@@ -163,27 +152,17 @@ async function drainStream(
     throw new HttpError(res.status, "no response body");
   }
 
+  const decoder = new SseDecoder();
   const reader = res.body.getReader();
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       if (ctl.signal.aborted) throw new DOMException("aborted", "AbortError");
-      const events = feedDecoder(wasm, decoderHandle, value);
+      const events = decoder.feed(value);
       for (const e of events) emit(e);
     }
   } finally {
     reader.releaseLock();
   }
-}
-
-function feedDecoder(wasm: LuvWasm, handle: number, chunk: Uint8Array): Event[] {
-  const eventBytes = callWithBytesInOut(
-    wasm,
-    "luv_decoder_feed",
-    (inPtr, inLen, outPtrOut, outLenOut) =>
-      wasm.luv_decoder_feed(handle, inPtr, inLen, outPtrOut, outLenOut),
-    chunk,
-  );
-  return decodeEvents(eventBytes);
 }

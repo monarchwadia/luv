@@ -115,6 +115,7 @@ export fn luv_parse_reply(
     const reply = morphism.fromOpenAI(parsed.value, allocator) catch |err| return switch (err) {
         error.NoChoices => -4,
         error.OutOfMemory => -1,
+        error.InvalidToolArgumentsJson => -3,
     };
     defer allocator.free(reply.message.text);
 

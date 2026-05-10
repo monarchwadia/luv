@@ -9,6 +9,7 @@ pub const requester_openai = @import("requesters/openai/openai.zig");
 pub const requester_openai_stream = @import("requesters/openai/openai_stream.zig");
 pub const wasm_codec = @import("wasm_abi/codec.zig");
 pub const wasm_exports = @import("wasm_abi/exports.zig");
+pub const agent = @import("agent/agent.zig");
 
 // Force analysis of the wasm_abi/exports.zig file so its `export fn`
 // declarations land in the wasm artifact even when nothing in this file
@@ -39,4 +40,5 @@ test {
     _ = requester_openai_stream;
     _ = wasm_codec;
     _ = wasm_exports;
+    _ = agent;
 }

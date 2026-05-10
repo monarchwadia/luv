@@ -17,10 +17,11 @@ interface MockFetchOptions {
 
 function makeMockSseFetch(body: Uint8Array, opts: MockFetchOptions = {}): typeof fetch {
   const { status = 200, chunkSize = 64, capture } = opts;
-  return async (input: RequestInfo | URL, init?: RequestInit) => {
+  const impl = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     let bodyBytes: Uint8Array;
-    if (init?.body instanceof Uint8Array) bodyBytes = init.body;
+    if (init?.body instanceof Uint8Array) bodyBytes = init.body as Uint8Array;
+    else if (typeof init?.body === "string") bodyBytes = new TextEncoder().encode(init.body);
     else bodyBytes = new Uint8Array();
     if (capture) {
       capture.value = { url, headers: new Headers(init?.headers), body: bodyBytes };
@@ -37,8 +38,9 @@ function makeMockSseFetch(body: Uint8Array, opts: MockFetchOptions = {}): typeof
         controller.close();
       },
     });
-    return new Response(stream, { status });
+    return new Response(stream as unknown as BodyInit, { status });
   };
+  return impl as typeof fetch;
 }
 
 test("sendStream: iterator yields start + text deltas + stop end_turn", async () => {
@@ -83,6 +85,7 @@ test("sendStream: .done resolves with assembled Reply", async () => {
 
   const reply = await stream.done;
   expect(reply.message.role).toBe("assistant");
+  if (reply.message.role !== "assistant") throw new Error("expected assistant");
   expect(reply.message.text).toBe("1, 2, 3, 4, 5");
   expect(reply.stopReason).toBe("end_turn");
 });
@@ -91,7 +94,7 @@ test("sendStream: hooks fire for start, each delta, and stop", async () => {
   const fixture = await loadFixture(FIXTURE_011);
   const deltas: string[] = [];
   let startCount = 0;
-  let stopReason: string | null = null;
+  let stopReason: string = "";
 
   const stream = sendStream(
     {

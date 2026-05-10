@@ -1,0 +1,22 @@
+{
+  "model": "gpt-4o-mini",
+  "messages": [
+    { "role": "user", "content": "Compare the weather in Tokyo and Berlin." }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "lookup_weather",
+        "description": "Returns current weather for a city",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "city": { "type": "string", "description": "City name" }
+          },
+          "required": ["city"]
+        }
+      }
+    }
+  ]
+}

@@ -108,6 +108,7 @@ fn roleFromByte(b: u8) DecodeError!luv.Role {
         0 => .system,
         1 => .user,
         2 => .assistant,
+        3 => .tool,
         else => error.InvalidRole,
     };
 }
@@ -117,6 +118,7 @@ fn roleToByte(r: luv.Role) u8 {
         .system => 0,
         .user => 1,
         .assistant => 2,
+        .tool => 3,
     };
 }
 

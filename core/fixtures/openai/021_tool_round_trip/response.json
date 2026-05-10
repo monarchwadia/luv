@@ -1,0 +1,22 @@
+{
+  "id": "chatcmpl-synthetic-021",
+  "object": "chat.completion",
+  "created": 1700000001,
+  "model": "gpt-4o-mini-2024-07-18",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "It's currently 18°C and sunny in Tokyo.",
+        "refusal": null
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 95,
+    "completion_tokens": 14,
+    "total_tokens": 109
+  }
+}

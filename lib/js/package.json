@@ -1,7 +1,7 @@
 {
   "name": "luv-js",
   "version": "0.1.0",
-  "description": "Modular WASM-first agentic framework — JS bindings (browser + Node + Bun)",
+  "description": "Modular agentic framework — pure-TS JS bindings (browser + Node + Bun)",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -15,11 +15,9 @@
     "dist"
   ],
   "scripts": {
-    "build:wasm": "cd ../../core && zig build wasm",
-    "build:embed": "bun run scripts/embed-wasm.ts",
     "build:bundle": "bun build src/index.ts --outdir=dist --target=browser --format=esm",
     "build:types": "tsc -p tsconfig.build.json",
-    "build": "bun run build:wasm && bun run build:embed && bun run build:bundle && bun run build:types",
+    "build": "bun run build:bundle && bun run build:types",
     "test": "bun test",
     "example:server": "bun run build && bun --env-file=../../.env run examples/server.ts"
   },

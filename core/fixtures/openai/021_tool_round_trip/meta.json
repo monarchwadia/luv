@@ -1,0 +1,5 @@
+{
+  "slug": "tool_round_trip",
+  "shape": "multi-turn: user → assistant(tool_call) → tool result → assistant text response, finish_reason=stop",
+  "synthetic": true
+}

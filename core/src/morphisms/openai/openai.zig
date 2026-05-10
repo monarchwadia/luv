@@ -28,11 +28,37 @@ pub const Options = struct {
     max_tokens: ?u32 = null,
     temperature: ?f32 = null,
     stream: bool = false,
+    tools: []const luv.Tool = &.{},
+};
+
+pub const RequestToolCallFunction = struct {
+    name: []const u8,
+    /// Stringified JSON of the call's arguments object.
+    arguments: []const u8,
+};
+
+pub const RequestToolCall = struct {
+    id: []const u8,
+    type: []const u8 = "function",
+    function: RequestToolCallFunction,
 };
 
 pub const RequestMessage = struct {
     role: []const u8,
-    content: []const u8,
+    content: ?[]const u8 = null,
+    tool_calls: ?[]const RequestToolCall = null,
+    tool_call_id: ?[]const u8 = null,
+};
+
+pub const ToolDefFunction = struct {
+    name: []const u8,
+    description: []const u8,
+    parameters: std.json.Value,
+};
+
+pub const ToolDef = struct {
+    type: []const u8 = "function",
+    function: ToolDefFunction,
 };
 
 pub const Request = struct {
@@ -41,12 +67,25 @@ pub const Request = struct {
     max_tokens: ?u32 = null,
     temperature: ?f32 = null,
     stream: ?bool = null,
+    tools: ?[]const ToolDef = null,
+};
+
+pub const ResponseToolCallFunction = struct {
+    name: []const u8,
+    arguments: []const u8,
+};
+
+pub const ResponseToolCall = struct {
+    id: []const u8,
+    type: []const u8,
+    function: ResponseToolCallFunction,
 };
 
 pub const ResponseMessage = struct {
     role: []const u8,
     content: ?[]const u8 = null,
     refusal: ?[]const u8 = null,
+    tool_calls: ?[]const ResponseToolCall = null,
 };
 
 pub const Choice = struct {
@@ -75,6 +114,7 @@ fn roleToString(r: luv.Role) []const u8 {
         .system => "system",
         .user => "user",
         .assistant => "assistant",
+        .tool => "tool",
     };
 }
 
@@ -87,8 +127,13 @@ fn stopReasonFrom(s: []const u8) luv.StopReason {
     return .other;
 }
 
-/// Build an OpenAI Request from a luv conversation. Caller owns `request.messages`.
-/// Message content slices are borrowed from `messages` and must outlive serialization.
+/// Build an OpenAI Request from a luv conversation.
+///
+/// Allocations made during this call: the messages slice, optional tools
+/// slice, the per-tool-call wire-format tool_calls slices, the per-tool-call
+/// stringified arguments JSON, and the per-tool-result error string (for
+/// `.err` ToolResults). Use an arena allocator to free everything at once;
+/// the morphism does not provide a recursive deinit helper.
 pub fn toOpenAI(
     messages: luv.Conversation,
     opts: Options,
@@ -97,30 +142,109 @@ pub fn toOpenAI(
     const out = try alloc.alloc(RequestMessage, messages.len);
     errdefer alloc.free(out);
     for (messages, 0..) |m, i| {
+        if (m.role == .tool) {
+            const result = m.result.?;
+            const content: []const u8 = switch (result) {
+                .ok => |c| c,
+                .err => |e| try std.fmt.allocPrint(alloc, "Error: {s}", .{e}),
+            };
+            out[i] = .{
+                .role = "tool",
+                .content = content,
+                .tool_call_id = m.call_id,
+            };
+            continue;
+        }
+        if (m.role == .assistant and m.tool_calls.len > 0) {
+            const wire_calls = try alloc.alloc(RequestToolCall, m.tool_calls.len);
+            for (m.tool_calls, 0..) |c, j| {
+                const args_str = try std.json.Stringify.valueAlloc(alloc, c.arguments, .{});
+                wire_calls[j] = .{
+                    .id = c.id,
+                    .function = .{
+                        .name = c.name,
+                        .arguments = args_str,
+                    },
+                };
+            }
+            out[i] = .{
+                .role = "assistant",
+                .content = if (m.text.len == 0) null else m.text,
+                .tool_calls = wire_calls,
+            };
+            continue;
+        }
         out[i] = .{
             .role = roleToString(m.role),
             .content = m.text,
         };
     }
+
+    var out_tools: ?[]ToolDef = null;
+    if (opts.tools.len > 0) {
+        const td = try alloc.alloc(ToolDef, opts.tools.len);
+        for (opts.tools, 0..) |t, i| {
+            td[i] = .{
+                .function = .{
+                    .name = t.name,
+                    .description = t.description,
+                    .parameters = t.input_schema,
+                },
+            };
+        }
+        out_tools = td;
+    }
+
     return .{
         .model = opts.model,
         .messages = out,
         .max_tokens = opts.max_tokens,
         .temperature = opts.temperature,
         .stream = if (opts.stream) true else null,
+        .tools = out_tools,
     };
 }
 
-pub const FromError = error{NoChoices} || std.mem.Allocator.Error;
+pub const FromError = error{ NoChoices, InvalidToolArgumentsJson } || std.mem.Allocator.Error;
 
-/// Convert a parsed OpenAI Response into a luv.Reply. Caller owns `reply.message.text`.
+/// Convert a parsed OpenAI Response into a luv.Reply.
+/// Use an arena allocator to free reply.message.text + tool_calls (and
+/// nested arguments std.json.Values) all at once.
 pub fn fromOpenAI(resp: Response, alloc: std.mem.Allocator) FromError!luv.Reply {
     if (resp.choices.len == 0) return error.NoChoices;
     const choice = resp.choices[0];
     const text = choice.message.content orelse choice.message.refusal orelse "";
-    const owned = try alloc.dupe(u8, text);
+    const owned_text = try alloc.dupe(u8, text);
+
+    var tool_calls: []luv.ToolCall = &.{};
+    if (choice.message.tool_calls) |wire_calls| {
+        if (wire_calls.len > 0) {
+            const out = try alloc.alloc(luv.ToolCall, wire_calls.len);
+            for (wire_calls, 0..) |wc, i| {
+                const owned_id = try alloc.dupe(u8, wc.id);
+                const owned_name = try alloc.dupe(u8, wc.function.name);
+                const args_value = std.json.parseFromSliceLeaky(
+                    std.json.Value,
+                    alloc,
+                    wc.function.arguments,
+                    .{},
+                ) catch return error.InvalidToolArgumentsJson;
+                out[i] = .{
+                    .id = owned_id,
+                    .name = owned_name,
+                    .arguments = args_value,
+                };
+            }
+            tool_calls = out;
+        }
+    }
+
     return .{
-        .message = .{ .role = .assistant, .text = owned },
+        .message = .{
+            .role = .assistant,
+            .text = owned_text,
+            .tool_calls = tool_calls,
+        },
         .stop_reason = stopReasonFrom(choice.finish_reason),
     };
 }
@@ -213,4 +337,143 @@ test "from_openai: 001_single_user yields assistant Reply with end_turn" {
     try testing.expectEqual(luv.Role.assistant, reply.message.role);
     try testing.expect(reply.message.text.len > 0);
     try testing.expectEqual(luv.StopReason.end_turn, reply.stop_reason);
+}
+
+// ---------------------------------------------------------------------------
+// Phase K — tool calling
+
+fn schemaCity(arena: std.mem.Allocator) !std.json.Value {
+    return std.json.parseFromSliceLeaky(std.json.Value, arena,
+        \\{
+        \\  "type": "object",
+        \\  "properties": { "city": { "type": "string", "description": "City name" } },
+        \\  "required": ["city"]
+        \\}
+    , .{});
+}
+
+fn freeRequestMessages(req: Request, alloc: std.mem.Allocator) void {
+    for (req.messages) |m| {
+        if (m.tool_calls) |tcs| {
+            for (tcs) |tc| alloc.free(tc.function.arguments);
+            alloc.free(tcs);
+        }
+        if (m.role.len > 0 and std.mem.eql(u8, m.role, "tool")) {
+            // Tool result content was allocPrint'd if .err; if .ok it's borrowed.
+            // We leak ok-content (small, test arena wipes anyway). For safety,
+            // tests should construct with .err to exercise allocation, or use arena.
+        }
+    }
+    alloc.free(req.messages);
+    if (req.tools) |ts| alloc.free(ts);
+}
+
+test "to_openai: 020 emits tools[] alongside messages" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const schema = try schemaCity(arena);
+    const tools = [_]luv.Tool{.{
+        .name = "lookup_weather",
+        .description = "Returns current weather for a city",
+        .input_schema = schema,
+    }};
+    const messages = [_]luv.Message{
+        .{ .role = .user, .text = "What's the weather in Tokyo?" },
+    };
+
+    const req = try toOpenAI(&messages, .{
+        .model = "gpt-4o-mini",
+        .tools = &tools,
+    }, arena);
+
+    const actual = try std.json.Stringify.valueAlloc(arena, req, .{
+        .emit_null_optional_fields = false,
+    });
+    const actual_parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, actual, .{});
+
+    const fixture = try loadFixture("fixtures/openai/020_tool_calls_basic/request.json");
+    defer testing.allocator.free(fixture);
+    const expected_parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, fixture, .{});
+
+    try testing.expect(jsonEqual(actual_parsed, expected_parsed));
+}
+
+test "from_openai: 020 parses tool_calls into Reply.message.tool_calls + tool_use stop" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const fixture = try loadFixture("fixtures/openai/020_tool_calls_basic/response.json");
+    defer testing.allocator.free(fixture);
+    const parsed = try std.json.parseFromSlice(Response, arena, fixture, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    const reply = try fromOpenAI(parsed.value, arena);
+
+    try testing.expectEqual(luv.Role.assistant, reply.message.role);
+    try testing.expectEqualStrings("", reply.message.text);
+    try testing.expectEqual(@as(usize, 1), reply.message.tool_calls.len);
+    try testing.expectEqualStrings("call_abc123", reply.message.tool_calls[0].id);
+    try testing.expectEqualStrings("lookup_weather", reply.message.tool_calls[0].name);
+    try testing.expectEqualStrings("Tokyo", reply.message.tool_calls[0].arguments.object.get("city").?.string);
+    try testing.expectEqual(luv.StopReason.tool_use, reply.stop_reason);
+}
+
+test "to_openai: 021 round-trip serializes assistant.tool_calls + tool result message" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const schema = try schemaCity(arena);
+    const args = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"city\":\"Tokyo\"}", .{});
+    const calls = [_]luv.ToolCall{.{ .id = "call_abc123", .name = "lookup_weather", .arguments = args }};
+    const messages = [_]luv.Message{
+        .{ .role = .user, .text = "What's the weather in Tokyo?" },
+        .{ .role = .assistant, .text = "", .tool_calls = &calls },
+        .{ .role = .tool, .call_id = "call_abc123", .result = .{ .ok = "{\"temp_c\":18,\"condition\":\"sunny\"}" } },
+    };
+    const tools = [_]luv.Tool{.{
+        .name = "lookup_weather",
+        .description = "Returns current weather for a city",
+        .input_schema = schema,
+    }};
+
+    const req = try toOpenAI(&messages, .{ .model = "gpt-4o-mini", .tools = &tools }, arena);
+
+    const actual = try std.json.Stringify.valueAlloc(arena, req, .{
+        .emit_null_optional_fields = false,
+    });
+    const actual_parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, actual, .{});
+
+    const fixture = try loadFixture("fixtures/openai/021_tool_round_trip/request.json");
+    defer testing.allocator.free(fixture);
+    const expected_parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, fixture, .{});
+
+    try testing.expect(jsonEqual(actual_parsed, expected_parsed));
+}
+
+test "from_openai: 022 parallel tool calls yield two ToolCall entries in order" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const fixture = try loadFixture("fixtures/openai/022_parallel_tool_calls/response.json");
+    defer testing.allocator.free(fixture);
+    const parsed = try std.json.parseFromSlice(Response, arena, fixture, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    const reply = try fromOpenAI(parsed.value, arena);
+
+    try testing.expectEqual(@as(usize, 2), reply.message.tool_calls.len);
+    try testing.expectEqualStrings("call_tokyo_1", reply.message.tool_calls[0].id);
+    try testing.expectEqualStrings("Tokyo", reply.message.tool_calls[0].arguments.object.get("city").?.string);
+    try testing.expectEqualStrings("call_berlin_1", reply.message.tool_calls[1].id);
+    try testing.expectEqualStrings("Berlin", reply.message.tool_calls[1].arguments.object.get("city").?.string);
+    try testing.expectEqual(luv.StopReason.tool_use, reply.stop_reason);
 }

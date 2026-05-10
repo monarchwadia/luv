@@ -3,7 +3,5 @@
 !.env.example
 test-tools/.tmp/
 lib/js/dist/
-lib/js/src/wasm_inline.ts
-lib/js/wasm/
 node_modules/
 .zig-cache/

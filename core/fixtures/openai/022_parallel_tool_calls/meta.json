@@ -1,0 +1,5 @@
+{
+  "slug": "parallel_tool_calls",
+  "shape": "assistant requests two tool calls in one turn (lookup_weather Tokyo + lookup_weather Berlin)",
+  "synthetic": true
+}

@@ -1,8 +1,6 @@
-// Non-streaming send: build wire JSON in wasm, fetch, parse reply in wasm.
+// Non-streaming send: build wire JSON via the morphism, fetch, parse via the morphism.
 
-import { encodeSendRequest, decodeReply } from "./codec.ts";
-import { callWithBytesInOut } from "./bridge.ts";
-import { getWasm, type InitOptions } from "./wasm.ts";
+import { fromOpenAI, toOpenAI, type OpenAIWireResponse } from "./morphism.ts";
 import type { Reply, SendOptions } from "./types.ts";
 
 const utf8Decoder = new TextDecoder("utf-8", { fatal: false });
@@ -18,8 +16,8 @@ export class HttpError extends Error {
   }
 }
 
-export interface SendInternalOptions extends InitOptions {
-  /** Override globalThis.fetch — primarily for tests. */
+export interface SendInternalOptions {
+  /** Override globalThis.fetch — for tests. */
   fetch?: typeof fetch;
 }
 
@@ -27,16 +25,14 @@ export async function send(
   opts: SendOptions,
   internal?: SendInternalOptions,
 ): Promise<Reply> {
-  const wasm = await getWasm(internal);
   const fetchImpl = internal?.fetch ?? globalThis.fetch.bind(globalThis);
-
-  const requestBytes = encodeSendRequest(opts);
-  const wireBytes = callWithBytesInOut(
-    wasm,
-    "luv_build_request",
-    wasm.luv_build_request,
-    requestBytes,
-  );
+  const wire = toOpenAI({
+    conversation: opts.conversation,
+    model: opts.model,
+    ...(opts.maxTokens !== undefined && { maxTokens: opts.maxTokens }),
+    ...(opts.temperature !== undefined && { temperature: opts.temperature }),
+    ...(opts.tools && { tools: opts.tools }),
+  });
 
   const baseUrl = opts.baseUrl ?? "https://api.openai.com";
   const url = `${baseUrl}/v1/chat/completions`;
@@ -47,20 +43,15 @@ export async function send(
       Authorization: `Bearer ${opts.apiKey}`,
       "Content-Type": "application/json",
     },
-    body: wireBytes as BodyInit,
+    body: JSON.stringify(wire),
     ...(opts.signal ? { signal: opts.signal } : {}),
   });
 
-  const responseBody = new Uint8Array(await res.arrayBuffer());
+  const bodyBytes = new Uint8Array(await res.arrayBuffer());
   if (!res.ok) {
-    throw new HttpError(res.status, utf8Decoder.decode(responseBody));
+    throw new HttpError(res.status, utf8Decoder.decode(bodyBytes));
   }
 
-  const replyBytes = callWithBytesInOut(
-    wasm,
-    "luv_parse_reply",
-    wasm.luv_parse_reply,
-    responseBody,
-  );
-  return decodeReply(replyBytes);
+  const parsed = JSON.parse(utf8Decoder.decode(bodyBytes)) as OpenAIWireResponse;
+  return fromOpenAI(parsed);
 }

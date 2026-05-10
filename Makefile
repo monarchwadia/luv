@@ -30,14 +30,14 @@ test:
 build:
 	cd core && $(ZIG) build wasm
 
-# Build the publishable JS package: wasm → embed as base64 → bundle → emit .d.ts.
-# Output: lib/js/dist/{index.js, index.d.ts, ...}.
+# Build the publishable JS package: bundle ESM + emit .d.ts.
+# Output: lib/js/dist/{index.js, index.d.ts, ...}. Pure TypeScript, no wasm.
 js:
 	cd lib/js && $(BUN) run build
 
-# Run the JS package's hermetic Bun tests. Auto-rebuilds wasm + embed first.
+# Run the JS package's hermetic Bun tests.
 js-test:
-	cd lib/js && $(BUN) run build:wasm && $(BUN) run build:embed && $(BUN) test
+	cd lib/js && $(BUN) test
 
 # Live-API integration tests. Requires OPENAI_API_KEY in .env.
 e2e:
