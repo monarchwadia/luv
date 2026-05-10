@@ -1,0 +1,8 @@
+{
+  "model": "gpt-4o-mini",
+  "messages": [
+    { "role": "user", "content": "Say hello in one short sentence." }
+  ],
+  "max_tokens": 32,
+  "temperature": 0
+}
