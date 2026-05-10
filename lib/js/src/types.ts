@@ -69,9 +69,17 @@ export type Message =
 
 export type Conversation = readonly Message[];
 
+export interface Usage {
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+  readonly totalTokens: number;
+}
+
 export interface Reply {
   readonly message: Message;
   readonly stopReason: StopReason;
+  /** Token counts for the request + completion, when the provider reports them. */
+  readonly usage?: Usage;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,6 +108,8 @@ export interface LuvStream extends AsyncIterable<Event> {
   cancel(): void;
   readonly aborted: boolean;
   readonly done: Promise<Reply>;
+  /** Iterate just the text deltas (the common case). */
+  text(): AsyncIterable<string>;
 }
 
 export interface SendStreamOptions extends SendOptions {

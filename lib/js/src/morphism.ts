@@ -38,6 +38,7 @@ import type {
   StopReason,
   Tool,
   ToolCall,
+  Usage,
 } from "./types.ts";
 
 export interface ToOpenAIOptions {
@@ -86,6 +87,12 @@ interface OpenAIWireResponseToolCall {
   readonly function: { readonly name: string; readonly arguments: string };
 }
 
+export interface OpenAIWireUsage {
+  readonly prompt_tokens?: number;
+  readonly completion_tokens?: number;
+  readonly total_tokens?: number;
+}
+
 export interface OpenAIWireResponse {
   readonly id?: string;
   readonly object?: string;
@@ -101,6 +108,7 @@ export interface OpenAIWireResponse {
     };
     readonly finish_reason: string;
   }>;
+  readonly usage?: OpenAIWireUsage;
 }
 
 export class MorphismError extends Error {
@@ -164,6 +172,8 @@ export function fromOpenAI(wire: OpenAIWireResponse): Reply {
   }
   const choice = wire.choices[0]!;
   const text = choice.message.content ?? choice.message.refusal ?? "";
+  const stopReason = stopReasonFromFinishReason(choice.finish_reason);
+  const usage = mapUsage(wire.usage);
 
   const wireCalls = choice.message.tool_calls;
   if (wireCalls && wireCalls.length > 0) {
@@ -180,13 +190,25 @@ export function fromOpenAI(wire: OpenAIWireResponse): Reply {
     });
     return {
       message: { role: "assistant", text, toolCalls },
-      stopReason: stopReasonFromFinishReason(choice.finish_reason),
+      stopReason,
+      ...(usage && { usage }),
     };
   }
 
   return {
     message: { role: "assistant", text },
-    stopReason: stopReasonFromFinishReason(choice.finish_reason),
+    stopReason,
+    ...(usage && { usage }),
+  };
+}
+
+function mapUsage(u: OpenAIWireUsage | undefined): Usage | undefined {
+  if (!u) return undefined;
+  // OpenAI always sends all three when usage is present, but defensively coerce.
+  return {
+    promptTokens: u.prompt_tokens ?? 0,
+    completionTokens: u.completion_tokens ?? 0,
+    totalTokens: u.total_tokens ?? 0,
   };
 }
 

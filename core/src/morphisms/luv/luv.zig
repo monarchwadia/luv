@@ -64,9 +64,17 @@ pub const Message = struct {
 /// A conversation is just a slice of messages — pure data.
 pub const Conversation = []const Message;
 
+pub const Usage = struct {
+    prompt_tokens: u32,
+    completion_tokens: u32,
+    total_tokens: u32,
+};
+
 pub const Reply = struct {
     message: Message,
     stop_reason: StopReason,
+    /// Token counts from the provider, when reported.
+    usage: ?Usage = null,
 };
 
 // ---------------------------------------------------------------------------

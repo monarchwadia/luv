@@ -1,20 +1,12 @@
 // Non-streaming send: build wire JSON via the morphism, fetch, parse via the morphism.
 
+import { classifyError, HttpError } from "./errors.ts";
 import { fromOpenAI, toOpenAI, type OpenAIWireResponse } from "./morphism.ts";
 import type { Reply, SendOptions } from "./types.ts";
 
 const utf8Decoder = new TextDecoder("utf-8", { fatal: false });
 
-export class HttpError extends Error {
-  readonly status: number;
-  readonly body: string;
-  constructor(status: number, body: string) {
-    super(`luv-js: HTTP ${status}${body ? `: ${body.slice(0, 200)}` : ""}`);
-    this.status = status;
-    this.body = body;
-    this.name = "HttpError";
-  }
-}
+export { HttpError };
 
 export interface SendInternalOptions {
   /** Override globalThis.fetch — for tests. */
@@ -49,7 +41,7 @@ export async function send(
 
   const bodyBytes = new Uint8Array(await res.arrayBuffer());
   if (!res.ok) {
-    throw new HttpError(res.status, utf8Decoder.decode(bodyBytes));
+    throw classifyError(res.status, utf8Decoder.decode(bodyBytes), res.headers.get("retry-after"));
   }
 
   const parsed = JSON.parse(utf8Decoder.decode(bodyBytes)) as OpenAIWireResponse;

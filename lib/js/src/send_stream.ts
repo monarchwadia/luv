@@ -1,9 +1,10 @@
 // Streaming send: build wire JSON via the morphism, fetch, drain SSE
 // through the pure-TS decoder, expose events.
 
+import { classifyError, HttpError } from "./errors.ts";
 import { toOpenAI } from "./morphism.ts";
 import { SseDecoder } from "./sse_decoder.ts";
-import { HttpError, type SendInternalOptions } from "./send.ts";
+import { type SendInternalOptions } from "./send.ts";
 import type {
   Event,
   LuvStream,
@@ -104,7 +105,7 @@ export function sendStream(
 
   donePromise.catch(() => {});
 
-  return {
+  const stream: LuvStream = {
     [Symbol.asyncIterator]: () => iterator,
     cancel(): void {
       internalCtl.abort();
@@ -113,7 +114,17 @@ export function sendStream(
       return internalCtl.signal.aborted;
     },
     done: donePromise,
+    text(): AsyncIterable<string> {
+      return {
+        async *[Symbol.asyncIterator]() {
+          for await (const event of stream) {
+            if (event.type === "text") yield event.delta;
+          }
+        },
+      };
+    },
   };
+  return stream;
 }
 
 async function drainStream(
@@ -146,7 +157,7 @@ async function drainStream(
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => "");
-    throw new HttpError(res.status, errBody);
+    throw classifyError(res.status, errBody, res.headers.get("retry-after"));
   }
   if (!res.body) {
     throw new HttpError(res.status, "no response body");

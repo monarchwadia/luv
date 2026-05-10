@@ -246,6 +246,11 @@ pub fn fromOpenAI(resp: Response, alloc: std.mem.Allocator) FromError!luv.Reply 
             .tool_calls = tool_calls,
         },
         .stop_reason = stopReasonFrom(choice.finish_reason),
+        .usage = .{
+            .prompt_tokens = resp.usage.prompt_tokens,
+            .completion_tokens = resp.usage.completion_tokens,
+            .total_tokens = resp.usage.total_tokens,
+        },
     };
 }
 
@@ -337,6 +342,13 @@ test "from_openai: 001_single_user yields assistant Reply with end_turn" {
     try testing.expectEqual(luv.Role.assistant, reply.message.role);
     try testing.expect(reply.message.text.len > 0);
     try testing.expectEqual(luv.StopReason.end_turn, reply.stop_reason);
+    try testing.expect(reply.usage != null);
+    try testing.expect(reply.usage.?.prompt_tokens > 0);
+    try testing.expect(reply.usage.?.completion_tokens > 0);
+    try testing.expectEqual(
+        reply.usage.?.prompt_tokens + reply.usage.?.completion_tokens,
+        reply.usage.?.total_tokens,
+    );
 }
 
 // ---------------------------------------------------------------------------
