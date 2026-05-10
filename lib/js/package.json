@@ -16,7 +16,8 @@
     "wasm/luv_core.wasm"
   ],
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "example:server": "bun --env-file=../../.env run examples/server.ts"
   },
   "dependencies": {},
   "devDependencies": {
