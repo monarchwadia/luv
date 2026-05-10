@@ -3,25 +3,30 @@
   "version": "0.1.0",
   "description": "Modular WASM-first agentic framework — JS bindings (browser + Node + Bun)",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
-      "default": "./src/index.ts"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     }
   },
   "files": [
-    "src",
-    "wasm/luv_core.wasm"
+    "dist"
   ],
   "scripts": {
+    "build:wasm": "cd ../../core && zig build wasm",
+    "build:embed": "bun run scripts/embed-wasm.ts",
+    "build:bundle": "bun build src/index.ts --outdir=dist --target=browser --format=esm",
+    "build:types": "tsc -p tsconfig.build.json",
+    "build": "bun run build:wasm && bun run build:embed && bun run build:bundle && bun run build:types",
     "test": "bun test",
-    "example:server": "bun --env-file=../../.env run examples/server.ts"
+    "example:server": "bun run build && bun --env-file=../../.env run examples/server.ts"
   },
   "dependencies": {},
   "devDependencies": {
-    "@types/bun": "^1.0.0"
+    "@types/bun": "^1.0.0",
+    "typescript": "^6.0.3"
   },
   "engines": {
     "bun": ">=1.0.0",

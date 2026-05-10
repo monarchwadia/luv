@@ -30,15 +30,14 @@ test:
 build:
 	cd core && $(ZIG) build wasm
 
-# Build the wasm artifact and copy it into the JS package.
+# Build the publishable JS package: wasm → embed as base64 → bundle → emit .d.ts.
+# Output: lib/js/dist/{index.js, index.d.ts, ...}.
 js:
-	cd core && $(ZIG) build wasm
-	cp core/zig-out/wasm/luv_core.wasm lib/js/wasm/luv_core.wasm
+	cd lib/js && $(BUN) run build
 
-# Run the JS package's hermetic Bun tests. Requires `make js` first if the
-# wasm artifact is stale.
-js-test: js
-	cd lib/js && $(BUN) test
+# Run the JS package's hermetic Bun tests. Auto-rebuilds wasm + embed first.
+js-test:
+	cd lib/js && $(BUN) run build:wasm && $(BUN) run build:embed && $(BUN) test
 
 # Live-API integration tests. Requires OPENAI_API_KEY in .env.
 e2e:

@@ -1,4 +1,6 @@
-// Public surface of luv-js.
+// Public surface of luv-js. Internals (wasm loader, codec, bridge) are
+// intentionally kept out of consumers' reach — the wasm is inlined and loaded
+// transparently on first call.
 
 export type {
   Conversation,
@@ -14,5 +16,3 @@ export type {
 
 export { send, HttpError } from "./send.ts";
 export { sendStream } from "./send_stream.ts";
-export { getWasm, type InitOptions, type LuvWasm } from "./wasm.ts";
-export { WasmCallError } from "./bridge.ts";

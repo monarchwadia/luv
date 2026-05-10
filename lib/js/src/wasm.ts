@@ -1,6 +1,9 @@
-// Wasm loader. Lazy-instantiates once per process; works in Bun, Node 22+,
-// and bundled browsers (Bun bundler, esbuild, Vite, webpack 5+ all
-// understand `new URL(..., import.meta.url)` for asset resolution).
+// Wasm loader. The wasm binary is embedded as base64 in `wasm_inline.ts`
+// (auto-generated at build time), so the bundled module is fully self-contained
+// — no separate .wasm file to fetch in the browser, no asset-loader plugin in
+// the consumer's bundler. Single import, works everywhere.
+
+import { wasmBase64 } from "./wasm_inline.ts";
 
 export interface LuvWasm {
   readonly memory: WebAssembly.Memory;
@@ -21,8 +24,8 @@ export interface LuvWasm {
 
 export interface InitOptions {
   /**
-   * Pre-loaded wasm bytes. Provide this in environments that can't fetch the
-   * wasm via `import.meta.url` (older Node, restricted CSP browsers, etc.).
+   * Override the embedded wasm with bytes you load yourself. Useful if you
+   * want to pin a different wasm version or load via streaming compilation.
    */
   wasm?: BufferSource;
 }
@@ -33,9 +36,15 @@ let cached: Promise<LuvWasm> | null = null;
 export function getWasm(opts?: InitOptions): Promise<LuvWasm> {
   if (cached) return cached;
   cached = (async () => {
-    const bytes = opts?.wasm ?? (await loadDefaultWasm());
-    const { instance } = await WebAssembly.instantiate(bytes, {});
-    return instance.exports as unknown as LuvWasm;
+    const bytes = opts?.wasm ?? base64ToBytes(wasmBase64);
+    // The (BufferSource, importObject) overload returns
+    // WebAssemblyInstantiatedSource = { module, instance }; the (Module, ...)
+    // overload returns Instance directly. Disambiguate via cast.
+    const result = (await WebAssembly.instantiate(
+      bytes as BufferSource,
+      {},
+    )) as WebAssembly.WebAssemblyInstantiatedSource;
+    return result.instance.exports as unknown as LuvWasm;
   })();
   return cached;
 }
@@ -45,11 +54,11 @@ export function _resetWasmForTests(): void {
   cached = null;
 }
 
-async function loadDefaultWasm(): Promise<ArrayBuffer> {
-  const url = new URL("../wasm/luv_core.wasm", import.meta.url);
-  const res = await fetch(url);
-  if (!res.ok) {
-    throw new Error(`luv-js: failed to load wasm at ${url.href}: HTTP ${res.status}`);
-  }
-  return res.arrayBuffer();
+function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
+  // `atob` is universal in Bun, Node 16+, Deno, and all modern browsers.
+  const binary = atob(b64);
+  const buffer = new ArrayBuffer(binary.length);
+  const out = new Uint8Array(buffer);
+  for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+  return out;
 }

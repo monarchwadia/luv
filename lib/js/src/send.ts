@@ -47,7 +47,7 @@ export async function send(
       Authorization: `Bearer ${opts.apiKey}`,
       "Content-Type": "application/json",
     },
-    body: wireBytes,
+    body: wireBytes as BodyInit,
     ...(opts.signal ? { signal: opts.signal } : {}),
   });
 

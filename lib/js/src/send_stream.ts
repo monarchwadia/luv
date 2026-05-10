@@ -151,7 +151,7 @@ async function drainStream(
       "Content-Type": "application/json",
       Accept: "text/event-stream",
     },
-    body: wireBytes,
+    body: wireBytes as BodyInit,
     signal: ctl.signal,
   });
 

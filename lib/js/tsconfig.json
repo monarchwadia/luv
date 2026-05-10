@@ -15,11 +15,13 @@
     "noUnusedParameters": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
     "esModuleInterop": false,
+    "ignoreDeprecations": "6.0",
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "noEmit": true,
-    "types": ["bun-types"]
+    "types": []
   },
   "include": ["src/**/*", "test/**/*"]
 }
