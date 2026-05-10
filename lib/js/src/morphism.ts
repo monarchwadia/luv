@@ -41,6 +41,15 @@ import type {
   Usage,
 } from "./types.ts";
 
+export interface ResponseFormat {
+  readonly type: "json_schema";
+  readonly json_schema: {
+    readonly name: string;
+    readonly schema: JSONSchema;
+    readonly strict: boolean;
+  };
+}
+
 export interface ToOpenAIOptions {
   readonly conversation: Conversation;
   readonly model: string;
@@ -48,6 +57,7 @@ export interface ToOpenAIOptions {
   readonly temperature?: number;
   readonly stream?: boolean;
   readonly tools?: readonly Tool[];
+  readonly responseFormat?: ResponseFormat;
 }
 
 interface OpenAIWireToolCall {
@@ -79,6 +89,7 @@ export interface OpenAIWireRequest {
   temperature?: number;
   stream?: boolean;
   tools?: OpenAIWireToolDef[];
+  response_format?: ResponseFormat;
 }
 
 interface OpenAIWireResponseToolCall {
@@ -163,6 +174,7 @@ export function toOpenAI(opts: ToOpenAIOptions): OpenAIWireRequest {
   if (opts.maxTokens !== undefined) out.max_tokens = opts.maxTokens;
   if (opts.temperature !== undefined) out.temperature = opts.temperature;
   if (opts.stream) out.stream = true;
+  if (opts.responseFormat) out.response_format = opts.responseFormat;
   return out;
 }
 

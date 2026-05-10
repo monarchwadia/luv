@@ -1,0 +1,79 @@
+---
+title: luv-js
+description: A tiny, zero-dep, isomorphic JS framework for LLM chat + agents.
+template: splash
+hero:
+  tagline: |
+    The conversation is just an array. Everything else is a small function
+    on it. 14 KB. Zero dependencies. Runs in Bun, Node, Deno, and the browser.
+  actions:
+    - text: Quickstart
+      link: /guide/quickstart/
+      icon: right-arrow
+      variant: primary
+    - text: Why luv?
+      link: /guide/why-luv/
+      icon: external
+    - text: GitHub
+      link: https://github.com/monarchwadia/luv
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from "@astrojs/starlight/components";
+
+<CardGrid stagger>
+  <Card title="One-shot chat" icon="comment-alt">
+    ```ts
+    import { createClient } from "luv-js";
+    const luv = createClient({ apiKey: process.env.OPENAI_API_KEY! });
+    const reply = await luv.send({
+      model: "gpt-4o-mini",
+      conversation: [{ role: "user", text: "say hi" }],
+    });
+    ```
+  </Card>
+  <Card title="Streaming" icon="bars">
+    ```ts
+    for await (const text of luv.sendStream({
+      model: "gpt-4o-mini",
+      conversation: [{ role: "user", text: "count to 5" }],
+    }).text()) {
+      process.stdout.write(text);
+    }
+    ```
+  </Card>
+  <Card title="Agent loop with tools" icon="setting">
+    ```ts
+    import { tool } from "luv-js";
+    const calc = tool({
+      name: "calc",
+      description: "evaluates an expression",
+      inputSchema: {
+        type: "object",
+        properties: { expr: { type: "string" } },
+        required: ["expr"],
+      },
+      handler: async ({ expr }) => ({ ok: true, content: String(eval(expr)) }),
+    });
+    await luv.runAgent({ model: "gpt-4o-mini", conversation: [...], tools: [calc] });
+    ```
+  </Card>
+  <Card title="Structured output" icon="document">
+    ```ts
+    const { object } = await luv.generateObject({
+      model: "gpt-4o-mini",
+      conversation: [{ role: "user", text: "give me a recipe" }],
+      schema: {
+        type: "object",
+        properties: {
+          name: { type: "string" },
+          steps: { type: "array", items: { type: "string" } },
+        },
+        required: ["name", "steps"],
+      },
+    });
+    // object.steps is typed: string[]
+    ```
+  </Card>
+</CardGrid>

@@ -119,3 +119,53 @@ test("agentStep: aborted signal → done=true, aborted", async () => {
   expect(result.reason).toBe("aborted");
   expect(result.newMessages.length).toBe(0);
 });
+
+test("agentStep: surfaces caught provider error via result.error", async () => {
+  const provider: Provider = {
+    send: async () => { throw new Error("network down"); },
+    sendStream: () => { throw new Error("not used"); },
+  };
+  const result = await agentStep({
+    provider,
+    model: "gpt-4o-mini",
+    conversation: [{ role: "user", text: "x" }],
+  });
+  expect(result.done).toBe(true);
+  expect(result.reason).toBe("error");
+  expect(result.error).toBeDefined();
+  expect(result.error?.message).toBe("network down");
+});
+
+test("agentStep: lifecycle hooks fire (onTurnStart, onToolCall, onToolResult, onFinish)", async () => {
+  const provider = makeMockProvider([
+    {
+      message: {
+        role: "assistant",
+        text: "",
+        toolCalls: [{ id: "c1", name: "echo", arguments: { msg: "hi" } }],
+      },
+      stopReason: "tool_use",
+    },
+  ]);
+  let turnStartObserved = 0;
+  let toolCallName = "";
+  let toolResultOk: boolean | undefined;
+  let finishReason = "";
+
+  await agentStep({
+    provider,
+    model: "gpt-4o-mini",
+    conversation: [{ role: "user", text: "go" }],
+    tools: [echoTool],
+    onTurnStart: (i) => { turnStartObserved = i; },
+    onToolCall: (c) => { toolCallName = c.name; },
+    onToolResult: (_c, r) => { toolResultOk = r.ok; },
+    onFinish: (r) => { finishReason = r; },
+  });
+
+  expect(turnStartObserved).toBe(1);
+  expect(toolCallName).toBe("echo");
+  expect(toolResultOk).toBe(true);
+  // For a single step, finish reason is the same as the step's reason.
+  expect(finishReason).toBe("continue");
+});

@@ -179,3 +179,18 @@ test("runAgent: unknown tool name produces ok=false tool result", async () => {
     if (!toolMsg.result.ok) expect(toolMsg.result.error).toContain("no_such_tool");
   }
 });
+
+test("runAgent: surfaces caught provider error via result.error", async () => {
+  const provider: Provider = {
+    send: async () => { throw new Error("boom"); },
+    sendStream: () => { throw new Error("not used"); },
+  };
+  const result = await runAgent({
+    provider,
+    model: "gpt-4o-mini",
+    conversation: [{ role: "user", text: "x" }],
+  });
+  expect(result.reason).toBe("error");
+  expect(result.error).toBeDefined();
+  expect(result.error?.message).toBe("boom");
+});

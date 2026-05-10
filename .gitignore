@@ -4,4 +4,11 @@
 test-tools/.tmp/
 lib/js/dist/
 node_modules/
+benchmarks/node_modules/
+benchmarks/bun.lock
+benchmarks/package-lock.json
+site/node_modules/
+site/dist/
+site/.astro/
+site/bun.lock
 .zig-cache/

@@ -15,9 +15,25 @@ import type {
 } from "./types.ts";
 
 /**
- * Open a streaming chat completion. The returned LuvStream supports any
- * combination of: async iteration, awaiting `.done`, hooks via opts, and
- * cancellation via `.cancel()` or an external AbortSignal.
+ * Open a streaming chat completion.
+ *
+ * The returned `LuvStream` supports three consumption patterns, all on the
+ * same underlying event stream:
+ *
+ *   1. `for await (const text of stream.text())` — yields just the text
+ *      deltas. The common case.
+ *   2. `for await (const event of stream)` — yields every event
+ *      (`start | text | stop`). Use when you need fine-grained control.
+ *   3. `await stream.done` — resolves with the assembled final `Reply`.
+ *
+ * Cancel any time with `stream.cancel()` or by aborting an `opts.signal`.
+ * Lifecycle hooks (`onStart`, `onDelta`, `onStop`, `onError`) fire as events
+ * flow, alongside whichever consumption pattern you pick.
+ *
+ * @example
+ * for await (const text of sendStream({ apiKey, model, conversation }).text()) {
+ *   process.stdout.write(text);
+ * }
  */
 export function sendStream(
   opts: SendStreamOptions,

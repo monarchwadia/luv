@@ -71,8 +71,31 @@ export interface ToolDef<S> {
 
 /** Build a luv `Tool` with type-inferred handler args.
  *
- *  Pass the inputSchema as an inline object literal (the `const` modifier on
- *  the type parameter preserves literal types, no `as const` needed).
+ * **Important:** `inputSchema` MUST be passed as an inline object literal in
+ * the call. Do not pull it into a separate `const` outside the call — that
+ * widens the type and the inference is lost. The handler's `args` parameter
+ * is automatically narrowed from the schema's `properties` + `required`.
+ *
+ * Returns a `Tool` ready for `runAgent({ tools: [...] })`.
+ *
+ * @example
+ * const lookupWeather = tool({
+ *   name: "lookup_weather",
+ *   description: "Returns current weather for a city",
+ *   inputSchema: {
+ *     type: "object",
+ *     properties: {
+ *       city: { type: "string" },
+ *       units: { type: "string", enum: ["c", "f"] },
+ *     },
+ *     required: ["city"],
+ *   },
+ *   handler: async ({ city, units }) => {
+ *     // city: string  (required)
+ *     // units: "c" | "f" | undefined  (optional, narrowed to literal union)
+ *     return { ok: true, content: await fetchWeather(city, units ?? "c") };
+ *   },
+ * });
  */
 export function tool<const S>(def: ToolDef<S>): Tool {
   return {

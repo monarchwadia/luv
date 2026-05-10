@@ -9,17 +9,27 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./middleware": {
+      "types": "./dist/middleware/index.d.ts",
+      "default": "./dist/middleware/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/index.d.ts",
+      "default": "./dist/mcp/index.js"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build:bundle": "bun build src/index.ts --outdir=dist --target=browser --format=esm",
+    "build:bundle": "bun build src/index.ts src/middleware/index.ts src/mcp/index.ts --outdir=dist --target=browser --format=esm --root=src --external node:*",
     "build:types": "tsc -p tsconfig.build.json",
     "build": "bun run build:bundle && bun run build:types",
     "test": "bun test",
-    "example:server": "bun run build && bun --env-file=../../.env run examples/server.ts"
+    "example:server": "bun run build && bun --env-file=../../.env run examples/server.ts",
+    "example:agent": "bun --env-file=../../.env run examples/agent.ts",
+    "example:manual-loop": "bun --env-file=../../.env run examples/manual_loop.ts"
   },
   "dependencies": {},
   "devDependencies": {

@@ -1,8 +1,14 @@
 # luv-js
 
+[![CI](https://github.com/monarchwadia/luv/actions/workflows/ci.yml/badge.svg)](https://github.com/monarchwadia/luv/actions/workflows/ci.yml)
+![bundle size](https://img.shields.io/badge/bundle-14_KB-brightgreen)
+![dependencies](https://img.shields.io/badge/runtime_deps-0-brightgreen)
+
 A small, isomorphic JavaScript/TypeScript library for talking to OpenAI-shaped
 chat APIs and building agent loops on top. Runs unchanged in Bun, Node 20+,
 Deno, and modern browsers (via any bundler). Zero runtime dependencies.
+
+**14 KB minified bundle, 0 deps.** ([benchmarks](../../benchmarks/README.md): 43× smaller than Vercel AI SDK, 9× smaller than the OpenAI SDK alone.)
 
 The whole package is built around one idea: **the conversation is a plain
 array of plain objects**. You can inspect it, mutate it, save it as JSON,
@@ -64,6 +70,20 @@ const result = await luv.runAgent({
   ],
 });
 ```
+
+## Choosing the right API
+
+| Need | Use |
+|---|---|
+| One round-trip; no streaming, no tool loop | `send` |
+| Incremental text deltas | `sendStream` |
+| Multi-turn loop where the model calls tools | `runAgent` |
+| Many calls with the same key — bundle them | `createClient` (returns `{send, sendStream, runAgent, provider, ...}`) |
+
+For pause/resume / approval flows where you want to drive the agent loop
+yourself and inspect each step, use **`agentStep`** — same loop body as
+`runAgent`, one iteration at a time. Append the returned `newMessages` to
+your conversation, optionally intervene, then call again until `done`.
 
 ## The four building blocks
 
@@ -260,6 +280,49 @@ try {
   }
 }
 ```
+
+Every error subclass also has a `.hint` field — a short human/LLM-actionable
+recovery suggestion (e.g. "Wait `retryAfterMs` and retry, or back off
+exponentially…"). Useful for UI display or for LLM-driven retry logic.
+
+The error `message` is truncated to ~200 chars for readability; the full
+response body is on `.body` if you need it for debugging.
+
+For ergonomic catching without re-importing, error classes are also exposed
+on the `LuvClient` returned by `createClient` — `client.RateLimitError`,
+`client.AuthError`, etc., reference the same constructors.
+
+### Validating tool arguments
+
+Inside a `tool()` handler, the args parameter is already type-narrowed from
+the schema. But code that inspects `ToolCall` values *outside* a handler
+(e.g., reading them from a stored conversation) sees `arguments: unknown`.
+
+Use `parseArguments` to runtime-check + type-cast in one step:
+
+```typescript
+import { parseArguments } from "luv-js";
+
+const schema = {
+  type: "object",
+  properties: { city: { type: "string" } },
+  required: ["city"],
+} as const;
+
+for (const m of conv) {
+  if (m.role === "assistant" && m.toolCalls) {
+    for (const call of m.toolCalls) {
+      if (call.name === "lookup_weather") {
+        const { city } = parseArguments(call, schema);  // typed: { city: string }
+        console.log("requested:", city);
+      }
+    }
+  }
+}
+```
+
+If the runtime shape doesn't match (missing required field, wrong type),
+`parseArguments` throws `ToolArgsError` with the failing path.
 
 ### Cancellation
 

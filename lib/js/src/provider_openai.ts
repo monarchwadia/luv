@@ -6,11 +6,25 @@ import { send, type SendInternalOptions } from "./send.ts";
 import { sendStream } from "./send_stream.ts";
 import type { LuvStream, Provider, ProviderSendOptions, ProviderStreamOptions, Reply } from "./types.ts";
 
+/** Configuration for {@link openaiProvider}. */
 export interface OpenAIProviderConfig {
+  /** OpenAI API key (or any OpenAI-compatible endpoint's key). */
   readonly apiKey: string;
+  /** Override the default `https://api.openai.com` base URL — useful for
+   *  proxies or OpenAI-compatible services (Ollama, vLLM, OpenRouter, etc.). */
   readonly baseUrl?: string;
 }
 
+/** Build a `Provider` for OpenAI Chat Completions and any OpenAI-compatible API.
+ *
+ * The returned provider is what `runAgent` (and any other consumer that
+ * accepts a `Provider`) talks to. Wrap with middleware (caching, retry,
+ * etc.) before passing to `runAgent` if needed.
+ *
+ * @example
+ * const provider = openaiProvider({ apiKey: process.env.OPENAI_API_KEY! });
+ * await runAgent({ provider, model: "gpt-4o-mini", conversation, tools });
+ */
 export function openaiProvider(
   config: OpenAIProviderConfig,
   internal?: SendInternalOptions,

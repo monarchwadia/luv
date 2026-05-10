@@ -32,7 +32,15 @@ export type JSONSchema = {
   readonly additionalProperties?: boolean | JSONSchema;
 };
 
+/** Per-call context passed to a `Tool.handler`.
+ *
+ * Currently exposes only an optional `AbortSignal` that fires when the
+ * agent loop is cancelled. Long-running tool handlers should propagate
+ * this signal to any downstream `fetch` / DB / file-system call so they
+ * can be cancelled cleanly.
+ */
 export interface ToolContext {
+  /** Aborts when the agent loop is cancelled (`runAgent`/`agentStep` opts.signal). */
   readonly signal?: AbortSignal;
 }
 
@@ -113,9 +121,13 @@ export interface LuvStream extends AsyncIterable<Event> {
 }
 
 export interface SendStreamOptions extends SendOptions {
+  /** Fires once when the stream's first chunk arrives, with the assistant's role. */
   readonly onStart?: (role: Role) => void;
+  /** Fires once per text delta as it arrives. */
   readonly onDelta?: (delta: string) => void;
+  /** Fires once when the stream terminates with a stop reason. */
   readonly onStop?: (stopReason: StopReason) => void;
+  /** Fires when the stream errors (network failure, body read error, etc.). */
   readonly onError?: (err: Error) => void;
 }
 
@@ -159,14 +171,18 @@ export interface AgentOptions {
   readonly model: string;
   readonly conversation: Conversation;
   readonly tools?: readonly Tool[];
+  /** Hard cap on round-trips before the loop bails. Default 10. */
   readonly maxIterations?: number;
   readonly maxTokens?: number;
   readonly temperature?: number;
   readonly signal?: AbortSignal;
-  // Lifecycle hooks — fire as the loop progresses.
+  /** Fires at the start of each loop iteration with the 1-based iteration count. */
   readonly onTurnStart?: (iteration: number) => void;
+  /** Fires once per tool call requested by the model in the just-received reply. */
   readonly onToolCall?: (call: ToolCall) => void;
+  /** Fires after each tool's handler returns, with the call and its result. */
   readonly onToolResult?: (call: ToolCall, result: ToolResult) => void;
+  /** Fires once when the loop terminates (any reason). */
   readonly onFinish?: (reason: AgentFinishReason) => void;
 }
 
@@ -174,4 +190,6 @@ export interface AgentResult {
   readonly conversation: readonly Message[];
   readonly reason: AgentFinishReason;
   readonly iterations: number;
+  /** Set when the loop ended because of a thrown error (reason === "error"). */
+  readonly error?: Error;
 }

@@ -156,3 +156,49 @@ test("sendStream: cancel() aborts the iterator without throwing", async () => {
   expect(stream.aborted).toBe(true);
   expect(count).toBeGreaterThanOrEqual(1);
 });
+
+test("sendStream: onError hook fires when the underlying fetch rejects", async () => {
+  const failingFetch = (async () => {
+    throw new Error("network exploded");
+  }) as unknown as typeof fetch;
+
+  let captured: Error | null = null;
+  const stream = sendStream(
+    {
+      apiKey: "sk",
+      model: "gpt-4o-mini",
+      conversation: [{ role: "user", text: "x" }],
+      onError: (err) => { captured = err; },
+    },
+    { fetch: failingFetch },
+  );
+
+  await expect(stream.done).rejects.toThrow("network exploded");
+  expect(captured).not.toBeNull();
+  expect(captured!.message).toBe("network exploded");
+});
+
+test("sendStream: onError hook fires when the SSE body errors mid-stream", async () => {
+  const erroringFetch = (async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.error(new Error("body broke"));
+      },
+    });
+    return new Response(stream as unknown as BodyInit, { status: 200 });
+  }) as unknown as typeof fetch;
+
+  let captured: Error | null = null;
+  const stream = sendStream(
+    {
+      apiKey: "sk",
+      model: "gpt-4o-mini",
+      conversation: [{ role: "user", text: "x" }],
+      onError: (err) => { captured = err; },
+    },
+    { fetch: erroringFetch },
+  );
+
+  await expect(stream.done).rejects.toThrow();
+  expect(captured).not.toBeNull();
+});

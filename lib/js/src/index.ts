@@ -33,7 +33,18 @@ export {
   type AgentStepResult,
 } from "./agent.ts";
 export { openaiProvider, type OpenAIProviderConfig } from "./provider_openai.ts";
+export {
+  anthropicProvider,
+  type AnthropicProviderConfig,
+} from "./provider_anthropic.ts";
 export { tool, type ToolDef, type InferSchema } from "./tool.ts";
+export { parseArguments, ToolArgsError } from "./tool_args.ts";
+export {
+  generateObject,
+  GenerateObjectError,
+  type GenerateObjectOptions,
+  type ObjectResult,
+} from "./object.ts";
 export {
   createClient,
   type LuvClient,

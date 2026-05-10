@@ -70,3 +70,34 @@ test("HttpError carries status + body", () => {
   expect(err.message).toContain("500");
   expect(err.message).toContain("boom");
 });
+
+test("HttpError.hint is a generic non-empty string", () => {
+  const err = new HttpError(500, "");
+  expect(typeof err.hint).toBe("string");
+  expect(err.hint.length).toBeGreaterThan(0);
+});
+
+test("AuthError.hint mentions the API key", () => {
+  const err = new AuthError(401, "");
+  expect(err.hint).toContain("API key");
+});
+
+test("RateLimitError.hint mentions retryAfterMs / backoff", () => {
+  const err = new RateLimitError(429, "", 1000);
+  expect(err.hint).toMatch(/retryAfterMs|backoff/i);
+});
+
+test("ContextWindowExceededError.hint mentions trimming/summarizing", () => {
+  const err = new ContextWindowExceededError(400, "");
+  expect(err.hint).toMatch(/trim|summariz/i);
+});
+
+test("ContentFilterError.hint mentions safety filters / modifying the prompt", () => {
+  const err = new ContentFilterError(400, "");
+  expect(err.hint).toMatch(/safety|filter|modify/i);
+});
+
+test("ServiceUnavailableError.hint mentions retry with backoff", () => {
+  const err = new ServiceUnavailableError(503, "");
+  expect(err.hint).toMatch(/retry|backoff/i);
+});

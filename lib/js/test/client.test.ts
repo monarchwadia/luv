@@ -115,3 +115,18 @@ test("createClient.provider: exposes the underlying Provider", async () => {
   expect(typeof client.provider.send).toBe("function");
   expect(typeof client.provider.sendStream).toBe("function");
 });
+
+test("createClient: exposes error classes for ergonomic instanceof catching", () => {
+  const client = createClient({ apiKey: "sk" });
+  // The classes on the client should reference the same constructors as imports.
+  expect(client.HttpError).toBeDefined();
+  expect(client.AuthError).toBeDefined();
+  expect(client.RateLimitError).toBeDefined();
+  expect(client.ContextWindowExceededError).toBeDefined();
+  expect(client.ContentFilterError).toBeDefined();
+  expect(client.ServiceUnavailableError).toBeDefined();
+  // Verify identity, not just defined-ness.
+  const err = new client.RateLimitError(429, "", 1000);
+  expect(err).toBeInstanceOf(client.RateLimitError);
+  expect(err).toBeInstanceOf(client.HttpError);
+});

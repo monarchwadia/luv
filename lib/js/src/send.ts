@@ -13,6 +13,24 @@ export interface SendInternalOptions {
   fetch?: typeof fetch;
 }
 
+/**
+ * Send a single chat completion and resolve with the assistant `Reply`.
+ *
+ * Use this for one-shot calls. For incremental output, use {@link sendStream}.
+ * For multi-turn agent loops with tool execution, use `runAgent`.
+ *
+ * Errors thrown subclass {@link HttpError} (`AuthError`, `RateLimitError`,
+ * `ContextWindowExceededError`, `ContentFilterError`,
+ * `ServiceUnavailableError`); use `instanceof` to discriminate.
+ *
+ * @example
+ * const reply = await send({
+ *   apiKey: process.env.OPENAI_API_KEY!,
+ *   model: "gpt-4o-mini",
+ *   conversation: [{ role: "user", text: "hi" }],
+ * });
+ * if (reply.message.role === "assistant") console.log(reply.message.text);
+ */
 export async function send(
   opts: SendOptions,
   internal?: SendInternalOptions,
