@@ -1,4 +1,6 @@
-.PHONY: snapshot fmt test build e2e
+.PHONY: snapshot fmt test build e2e js js-test
+
+BUN ?= $(shell command -v bun 2>/dev/null || echo $$HOME/.bun/bin/bun)
 
 ZIG ?= zig
 
@@ -27,6 +29,16 @@ test:
 
 build:
 	cd core && $(ZIG) build wasm
+
+# Build the wasm artifact and copy it into the JS package.
+js:
+	cd core && $(ZIG) build wasm
+	cp core/zig-out/wasm/luv_core.wasm lib/js/wasm/luv_core.wasm
+
+# Run the JS package's hermetic Bun tests. Requires `make js` first if the
+# wasm artifact is stale.
+js-test: js
+	cd lib/js && $(BUN) test
 
 # Live-API integration tests. Requires OPENAI_API_KEY in .env.
 e2e:

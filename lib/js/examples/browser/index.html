@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>luv-js browser demo</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 40em; margin: 2em auto; padding: 0 1em; }
+      textarea { width: 100%; min-height: 4em; }
+      pre { background: #f6f6f6; padding: 1em; min-height: 6em; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>luv-js · browser demo</h1>
+    <p>
+      Talks to a local Bun server (<code>examples/server.ts</code>) which proxies to OpenAI.
+      The browser <em>cannot</em> call api.openai.com directly due to CORS — the same package
+      runs on the server with a real API key, and on this page pointed at <code>/chat/stream</code>.
+    </p>
+    <textarea id="prompt">Count from one to five.</textarea>
+    <p><button id="go">Send (streaming)</button></p>
+    <pre id="output"></pre>
+
+    <script type="module">
+      const out = document.getElementById("output");
+      document.getElementById("go").addEventListener("click", async () => {
+        out.textContent = "";
+        const res = await fetch("/chat/stream", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: document.getElementById("prompt").value }),
+        });
+        const reader = res.body.getReader();
+        const dec = new TextDecoder();
+        let buf = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf("\n")) !== -1) {
+            const line = buf.slice(0, nl);
+            buf = buf.slice(nl + 1);
+            if (!line) continue;
+            const event = JSON.parse(line);
+            if (event.type === "text") out.textContent += event.delta;
+          }
+        }
+      });
+    </script>
+  </body>
+</html>
