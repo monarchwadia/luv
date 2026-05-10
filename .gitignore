@@ -2,3 +2,4 @@
 .env.*
 !.env.example
 test-tools/.tmp/
+.zig-cache/
