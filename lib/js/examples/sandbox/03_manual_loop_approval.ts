@@ -6,6 +6,7 @@
 //   cd lib/js && bun run sandbox examples/sandbox/03_manual_loop_approval.ts   (from lib/js)
 
 import "./_env.ts";
+import * as readline from "node:readline/promises";
 import {
   openaiProvider,
   pendingToolCalls,
@@ -27,41 +28,66 @@ const writeFile = tool({
     required: ["path", "content"],
   } as const,
   handler: async ({ path, content }) => {
-    // Pretend we wrote it.
     return { ok: true, content: `wrote ${content.length} bytes to ${path}` };
   },
 });
 
 const provider = openaiProvider({ apiKey });
 const tools = [writeFile];
+const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+async function ask(prompt: string, fallback = ""): Promise<string> {
+  const answer = (await rl.question(prompt)).trim();
+  return answer === "" ? fallback : answer;
+}
 
 let conv: Conversation = [
-  { role: "user", text: "Create a file hello.txt that contains 'hello world'." },
+  { role: "user", text: "Create a file foo.txt that contains 'hahaha'. but in pirate speak" },
 ];
 
-for (let i = 0; i < 5; i++) {
-  console.log(`--- turn ${i + 1} ---`);
+try {
+  for (let i = 0; i < 5; i++) {
+    console.log(`\n--- turn ${i + 1} ---`);
 
-  const reply = await provider.send({ model: "gpt-5.4", conversation: conv, tools });
-  conv = [...conv, reply.message];
+    const reply = await provider.send({ model: "gpt-5.4", conversation: conv, tools });
+    conv = [...conv, reply.message];
 
-  const pending = pendingToolCalls(conv);
-  if (pending.length === 0) {
-    if (reply.message.role === "assistant") console.log(`assistant: ${reply.message.text}`);
-    break;
-  }
-
-  // Approval gate — auto-approve in this script. Set DENY=1 to deny instead.
-  for (const call of pending) {
-    console.log(`  pending: ${call.name}(${JSON.stringify(call.arguments)})`);
-    let result: ToolResult;
-    if (process.env["DENY"]) {
-      result = { ok: false, error: "user denied" };
-    } else {
-      const t = tools.find((x) => x.name === call.name)!;
-      result = await t.handler(call.arguments as never, {});
+    const pending = pendingToolCalls(conv);
+    if (pending.length === 0) {
+      if (reply.message.role === "assistant") console.log(`assistant: ${reply.message.text}`);
+      break;
     }
-    console.log(`  → ${result.ok ? result.content : `ERR: ${result.error}`}`);
-    conv = respondToToolCall(conv, call.id, result);
+
+    for (const call of pending) {
+      console.log(`\n  pending: ${call.name}(${JSON.stringify(call.arguments)})`);
+      const choice = (await ask("  [A]pprove / [d]eny / [e]dit args? ", "a")).toLowerCase();
+
+      let result: ToolResult;
+      let args = call.arguments;
+
+      if (choice === "d") {
+        const reason = await ask("  reason: ", "user denied");
+        result = { ok: false, error: reason };
+      } else {
+        if (choice === "e") {
+          const edited = await ask(`  new args (JSON) [${JSON.stringify(call.arguments)}]: `, "");
+          if (edited !== "") {
+            try { args = JSON.parse(edited); }
+            catch (e) { console.log(`  invalid JSON, keeping original args (${(e as Error).message})`); }
+          }
+        }
+        const t = tools.find((x) => x.name === call.name)!;
+        try {
+          result = await t.handler(args as never, {});
+        } catch (err) {
+          result = { ok: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+
+      console.log(`  → ${result.ok ? result.content : `ERR: ${result.error}`}`);
+      conv = respondToToolCall(conv, call.id, result);
+    }
   }
+} finally {
+  rl.close();
 }
