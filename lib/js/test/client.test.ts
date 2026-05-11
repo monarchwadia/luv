@@ -130,3 +130,83 @@ test("createClient: exposes error classes for ergonomic instanceof catching", ()
   expect(err).toBeInstanceOf(client.RateLimitError);
   expect(err).toBeInstanceOf(client.HttpError);
 });
+
+test("createClient: sendStream works without re-passing apiKey", async () => {
+  // Minimal SSE that emits role + one text + stop
+  const sseBody = new TextEncoder().encode(
+    'data: {"choices":[{"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\n' +
+    'data: {"choices":[{"delta":{"content":"hi"},"finish_reason":null}]}\n\n' +
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+    'data: [DONE]\n\n',
+  );
+  const fetchImpl = (async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) { c.enqueue(sseBody); c.close(); },
+    });
+    return new Response(stream as unknown as BodyInit, { status: 200 });
+  }) as unknown as typeof fetch;
+  const client = createClient({ apiKey: "sk" }, { fetch: fetchImpl });
+  const stream = client.sendStream({
+    model: "gpt-4o-mini",
+    conversation: [{ role: "user", text: "hi" }],
+  });
+  const reply = await stream.done;
+  if (reply.message.role !== "assistant") throw new Error();
+  expect(reply.message.text).toBe("hi");
+});
+
+test("createClient: generateObject works without re-passing apiKey", async () => {
+  const fetchImpl = (async () =>
+    new Response(JSON.stringify({
+      id: "x", object: "chat.completion", created: 1, model: "x",
+      choices: [{ index: 0, message: { role: "assistant", content: '{"x":42}' }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200 })) as unknown as typeof fetch;
+  const client = createClient({ apiKey: "sk" }, { fetch: fetchImpl });
+  const r = await client.generateObject({
+    model: "gpt-4o-mini",
+    conversation: [{ role: "user", text: "x" }],
+    schema: { type: "object", properties: { x: { type: "number" } }, required: ["x"] },
+  });
+  expect(r.object.x).toBe(42);
+});
+
+test("createClient: baseUrl propagates to send", async () => {
+  let capturedUrl = "";
+  const captureFetch = (async (input: RequestInfo | URL) => {
+    capturedUrl = typeof input === "string" ? input : input.toString();
+    return new Response(JSON.stringify({
+      id: "x", object: "chat.completion", created: 1, model: "x",
+      choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const client = createClient(
+    { apiKey: "sk", baseUrl: "https://my-proxy.test" },
+    { fetch: captureFetch },
+  );
+  await client.send({ model: "x", conversation: [{ role: "user", text: "x" }] });
+  expect(capturedUrl).toBe("https://my-proxy.test/v1/chat/completions");
+});
+
+test("createClient: baseUrl propagates to generateObject", async () => {
+  let capturedUrl = "";
+  const captureFetch = (async (input: RequestInfo | URL) => {
+    capturedUrl = typeof input === "string" ? input : input.toString();
+    return new Response(JSON.stringify({
+      id: "x", object: "chat.completion", created: 1, model: "x",
+      choices: [{ index: 0, message: { role: "assistant", content: '{"x":1}' }, finish_reason: "stop" }],
+      usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+    }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const client = createClient(
+    { apiKey: "sk", baseUrl: "https://proxy.test" },
+    { fetch: captureFetch },
+  );
+  await client.generateObject({
+    model: "x",
+    conversation: [{ role: "user", text: "x" }],
+    schema: { type: "object", properties: { x: { type: "number" } }, required: ["x"] },
+  });
+  expect(capturedUrl).toBe("https://proxy.test/v1/chat/completions");
+});

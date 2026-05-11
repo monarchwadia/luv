@@ -194,3 +194,227 @@ test("runAgent: surfaces caught provider error via result.error", async () => {
   expect(result.error).toBeDefined();
   expect(result.error?.message).toBe("boom");
 });
+
+test("runAgent: does NOT mutate the input conversation array", async () => {
+  const original: Message[] = [{ role: "user", text: "hi" }];
+  const snapshot = JSON.stringify(original);
+  const provider: Provider = {
+    async send() {
+      return { message: { role: "assistant", text: "ok" }, stopReason: "end_turn" };
+    },
+    sendStream() { throw new Error("not used"); },
+  };
+  await runAgent({ provider, model: "gpt-4o-mini", conversation: original });
+  // Caller's array is untouched even though loop appended internally.
+  expect(JSON.stringify(original)).toBe(snapshot);
+  expect(original.length).toBe(1);
+});
+
+test("runAgent: executes parallel tool calls concurrently (not sequentially)", async () => {
+  let inFlight = 0;
+  let maxInFlight = 0;
+  const slowTool: Tool = {
+    name: "slow",
+    description: "takes time",
+    inputSchema: { type: "object", properties: {}, required: [] },
+    handler: async () => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 30));
+      inFlight--;
+      return { ok: true, content: "done" };
+    },
+  };
+  const provider: Provider = (() => {
+    let i = 0;
+    return {
+      async send() {
+        i++;
+        if (i === 1) {
+          return {
+            message: {
+              role: "assistant",
+              text: "",
+              toolCalls: [
+                { id: "a", name: "slow", arguments: {} },
+                { id: "b", name: "slow", arguments: {} },
+                { id: "c", name: "slow", arguments: {} },
+              ],
+            },
+            stopReason: "tool_use",
+          };
+        }
+        return { message: { role: "assistant", text: "all done" }, stopReason: "end_turn" };
+      },
+      sendStream() { throw new Error("not used"); },
+    };
+  })();
+  await runAgent({
+    provider,
+    model: "gpt-4o-mini",
+    conversation: [{ role: "user", text: "x" }],
+    tools: [slowTool],
+  });
+  expect(maxInFlight).toBeGreaterThanOrEqual(2); // at least 2 ran in parallel
+});
+
+test("runAgent: tool handler that throws becomes ok=false ToolResult, loop continues", async () => {
+  const throwingTool: Tool = {
+    name: "broken",
+    description: "always throws",
+    inputSchema: { type: "object", properties: {}, required: [] },
+    handler: async () => { throw new Error("kaboom"); },
+  };
+  const provider: Provider = (() => {
+    let i = 0;
+    return {
+      async send() {
+        i++;
+        if (i === 1) {
+          return {
+            message: {
+              role: "assistant", text: "",
+              toolCalls: [{ id: "c1", name: "broken", arguments: {} }],
+            },
+            stopReason: "tool_use",
+          };
+        }
+        return { message: { role: "assistant", text: "I failed" }, stopReason: "end_turn" };
+      },
+      sendStream() { throw new Error("not used"); },
+    };
+  })();
+  const result = await runAgent({
+    provider,
+    model: "gpt-4o-mini",
+    conversation: [{ role: "user", text: "x" }],
+    tools: [throwingTool],
+  });
+  expect(result.reason).toBe("end_turn");
+  const toolMsg = result.conversation.find((m) => m.role === "tool");
+  expect(toolMsg).toBeDefined();
+  if (toolMsg && toolMsg.role === "tool") {
+    expect(toolMsg.result.ok).toBe(false);
+    if (!toolMsg.result.ok) expect(toolMsg.result.error).toContain("kaboom");
+  }
+});
+
+test("runAgent: maxIterations boundary — N iterations are allowed, N+1 is the cap", async () => {
+  // Provider that always returns a tool call → loop never exits naturally.
+  const noopTool: Tool = {
+    name: "noop",
+    description: "noop",
+    inputSchema: { type: "object", properties: {}, required: [] },
+    handler: async () => ({ ok: true, content: "" }),
+  };
+  let sends = 0;
+  const provider: Provider = {
+    async send() {
+      sends++;
+      return {
+        message: {
+          role: "assistant", text: "",
+          toolCalls: [{ id: `c${sends}`, name: "noop", arguments: {} }],
+        },
+        stopReason: "tool_use",
+      };
+    },
+    sendStream() { throw new Error("not used"); },
+  };
+  const result = await runAgent({
+    provider,
+    model: "gpt-4o-mini",
+    conversation: [{ role: "user", text: "x" }],
+    tools: [noopTool],
+    maxIterations: 3,
+  });
+  expect(result.reason).toBe("max_iterations");
+  // The loop sent send 3 times (iterations 1, 2, 3). Iteration 4 hits the cap.
+  // result.iterations is the iteration counter when the cap was checked, which
+  // is one past the last successful iteration (4 here).
+  expect(result.iterations).toBe(4);
+  expect(sends).toBe(3);
+});
+
+test("runAgent: parallel tool results appear in the order matching the call order", async () => {
+  const recordTool = (name: string, delayMs: number): Tool => ({
+    name,
+    description: name,
+    inputSchema: { type: "object", properties: {}, required: [] },
+    handler: async () => {
+      await new Promise((r) => setTimeout(r, delayMs));
+      return { ok: true, content: name };
+    },
+  });
+  const provider: Provider = (() => {
+    let i = 0;
+    return {
+      async send() {
+        i++;
+        if (i === 1) {
+          return {
+            message: {
+              role: "assistant", text: "",
+              toolCalls: [
+                { id: "a", name: "fast", arguments: {} },
+                { id: "b", name: "slow", arguments: {} },
+                { id: "c", name: "fast", arguments: {} },
+              ],
+            },
+            stopReason: "tool_use",
+          };
+        }
+        return { message: { role: "assistant", text: "done" }, stopReason: "end_turn" };
+      },
+      sendStream() { throw new Error(""); },
+    };
+  })();
+  const result = await runAgent({
+    provider, model: "gpt-4o-mini",
+    conversation: [{ role: "user", text: "x" }],
+    tools: [recordTool("fast", 1), recordTool("slow", 30)],
+  });
+  // Find the tool messages in order; their callIds should match the call order
+  // even though "slow" finished last in real time.
+  const toolMsgs = result.conversation.filter((m) => m.role === "tool");
+  expect(toolMsgs.length).toBe(3);
+  if (toolMsgs[0]?.role === "tool") expect(toolMsgs[0].callId).toBe("a");
+  if (toolMsgs[1]?.role === "tool") expect(toolMsgs[1].callId).toBe("b");
+  if (toolMsgs[2]?.role === "tool") expect(toolMsgs[2].callId).toBe("c");
+});
+
+test("runAgent: provider.send receives the cumulative conversation, not just the original", async () => {
+  const seenLengths: number[] = [];
+  const noopTool: Tool = {
+    name: "noop",
+    description: "noop",
+    inputSchema: { type: "object", properties: {}, required: [] },
+    handler: async () => ({ ok: true, content: "" }),
+  };
+  let i = 0;
+  const provider: Provider = {
+    async send(opts) {
+      seenLengths.push(opts.conversation.length);
+      i++;
+      if (i < 2) {
+        return {
+          message: {
+            role: "assistant", text: "",
+            toolCalls: [{ id: "c1", name: "noop", arguments: {} }],
+          },
+          stopReason: "tool_use",
+        };
+      }
+      return { message: { role: "assistant", text: "done" }, stopReason: "end_turn" };
+    },
+    sendStream() { throw new Error(""); },
+  };
+  await runAgent({
+    provider, model: "x",
+    conversation: [{ role: "user", text: "go" }],
+    tools: [noopTool],
+  });
+  // 1st send: 1 message (user)
+  // 2nd send: 3 messages (user + assistant + tool result)
+  expect(seenLengths).toEqual([1, 3]);
+});

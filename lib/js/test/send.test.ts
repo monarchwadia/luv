@@ -128,3 +128,105 @@ test("send: malformed JSON response surfaces a parse error", async () => {
     ),
   ).rejects.toThrow();
 });
+
+import { RateLimitError, AuthError, ContextWindowExceededError, ServiceUnavailableError } from "../src/errors.ts";
+import { tool } from "../src/tool.ts";
+
+test("send: tools propagate to wire request", async () => {
+  // Regression — caught by the live agent loop test before we wired this through.
+  const captured: { value: CapturedRequest | null } = { value: null };
+  await send(
+    {
+      apiKey: "sk",
+      model: "gpt-4o-mini",
+      conversation: [{ role: "user", text: "x" }],
+      tools: [tool({
+        name: "calc",
+        description: "calc",
+        inputSchema: { type: "object", properties: { x: { type: "number" } }, required: ["x"] },
+        handler: async () => ({ ok: true, content: "" }),
+      })],
+    },
+    { fetch: makeMockFetch(200, await loadFixture(FIXTURE_001), captured) },
+  );
+  const wire = JSON.parse(new TextDecoder().decode(captured.value!.body));
+  expect(wire.tools?.[0]?.function?.name).toBe("calc");
+});
+
+test("send: 429 propagates as RateLimitError with retryAfterMs", async () => {
+  const errFetch = (async () =>
+    new Response("rate limited", {
+      status: 429,
+      headers: { "retry-after": "30" },
+    })) as unknown as typeof fetch;
+  try {
+    await send(
+      { apiKey: "sk", model: "gpt-4o-mini", conversation: [{ role: "user", text: "x" }] },
+      { fetch: errFetch },
+    );
+    throw new Error("should have thrown");
+  } catch (err) {
+    expect(err).toBeInstanceOf(RateLimitError);
+    if (err instanceof RateLimitError) expect(err.retryAfterMs).toBe(30_000);
+  }
+});
+
+test("send: 401 propagates as AuthError", async () => {
+  const errFetch = (async () => new Response("", { status: 401 })) as unknown as typeof fetch;
+  await expect(
+    send(
+      { apiKey: "bad", model: "gpt-4o-mini", conversation: [{ role: "user", text: "x" }] },
+      { fetch: errFetch },
+    ),
+  ).rejects.toBeInstanceOf(AuthError);
+});
+
+test("send: 400 with context_length_exceeded propagates as ContextWindowExceededError", async () => {
+  const body = JSON.stringify({ error: { code: "context_length_exceeded" } });
+  const errFetch = (async () => new Response(body, { status: 400 })) as unknown as typeof fetch;
+  await expect(
+    send(
+      { apiKey: "sk", model: "gpt-4o-mini", conversation: [{ role: "user", text: "x" }] },
+      { fetch: errFetch },
+    ),
+  ).rejects.toBeInstanceOf(ContextWindowExceededError);
+});
+
+test("send: 503 propagates as ServiceUnavailableError", async () => {
+  const errFetch = (async () => new Response("down", { status: 503 })) as unknown as typeof fetch;
+  await expect(
+    send(
+      { apiKey: "sk", model: "gpt-4o-mini", conversation: [{ role: "user", text: "x" }] },
+      { fetch: errFetch },
+    ),
+  ).rejects.toBeInstanceOf(ServiceUnavailableError);
+});
+
+test("send: signal propagates to fetch", async () => {
+  let capturedSignal: AbortSignal | undefined;
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    capturedSignal = init?.signal ?? undefined;
+    return new Response(await loadFixture(FIXTURE_001) as unknown as BodyInit, { status: 200 });
+  }) as unknown as typeof fetch;
+  const ctl = new AbortController();
+  await send(
+    { apiKey: "sk", model: "gpt-4o-mini", conversation: [{ role: "user", text: "x" }], signal: ctl.signal },
+    { fetch: fetchImpl },
+  );
+  expect(capturedSignal).toBe(ctl.signal);
+});
+
+test("send: maxTokens / temperature pass through to wire request", async () => {
+  const captured: { value: CapturedRequest | null } = { value: null };
+  await send(
+    {
+      apiKey: "sk", model: "gpt-4o-mini",
+      conversation: [{ role: "user", text: "x" }],
+      maxTokens: 128, temperature: 0.5,
+    },
+    { fetch: makeMockFetch(200, await loadFixture(FIXTURE_001), captured) },
+  );
+  const wire = JSON.parse(new TextDecoder().decode(captured.value!.body));
+  expect(wire.max_tokens).toBe(128);
+  expect(wire.temperature).toBe(0.5);
+});

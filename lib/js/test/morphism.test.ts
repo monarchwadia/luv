@@ -155,3 +155,96 @@ test("fromOpenAI: throws on empty choices array", () => {
   };
   expect(() => fromOpenAI(wire)).toThrow();
 });
+
+test("toOpenAI: temperature: 0 is emitted (not dropped as falsy)", () => {
+  // Regression — undefined was correctly omitted, but 0 must still be sent.
+  const wire = toOpenAI({
+    conversation: [{ role: "user", text: "hi" }],
+    model: "gpt-4o-mini",
+    temperature: 0,
+  });
+  expect(wire.temperature).toBe(0);
+  expect("temperature" in wire).toBe(true);
+});
+
+test("toOpenAI: maxTokens: 0 is emitted as max_tokens: 0", () => {
+  const wire = toOpenAI({
+    conversation: [{ role: "user", text: "hi" }],
+    model: "gpt-4o-mini",
+    maxTokens: 0,
+  });
+  expect(wire.max_tokens).toBe(0);
+});
+
+test("toOpenAI: response_format passes through to wire request when set", () => {
+  const wire = toOpenAI({
+    conversation: [{ role: "user", text: "hi" }],
+    model: "gpt-4o-mini",
+    responseFormat: {
+      type: "json_schema",
+      json_schema: {
+        name: "result",
+        schema: { type: "object", properties: { x: { type: "number" } }, required: ["x"] },
+        strict: true,
+      },
+    },
+  });
+  expect(wire.response_format).toBeDefined();
+  expect(wire.response_format?.json_schema.name).toBe("result");
+});
+
+test("toOpenAI: response_format omitted when not set", () => {
+  const wire = toOpenAI({
+    conversation: [{ role: "user", text: "hi" }],
+    model: "gpt-4o-mini",
+  });
+  expect(wire.response_format).toBeUndefined();
+});
+
+test("toOpenAI: consecutive same-role messages preserved verbatim (OpenAI tolerates them)", () => {
+  // Anthropic rejects this; OpenAI accepts. luv's contract: pass through.
+  const wire = toOpenAI({
+    conversation: [
+      { role: "user", text: "first" },
+      { role: "user", text: "second" },
+      { role: "user", text: "third" },
+    ],
+    model: "gpt-4o-mini",
+  });
+  expect(wire.messages.length).toBe(3);
+  expect(wire.messages.map((m) => m.role)).toEqual(["user", "user", "user"]);
+});
+
+test("toOpenAI: single empty conversation produces a request with empty messages array", () => {
+  const wire = toOpenAI({
+    conversation: [],
+    model: "gpt-4o-mini",
+  });
+  expect(wire.messages).toEqual([]);
+});
+
+test("fromOpenAI: assistant content is empty string when both content and refusal are null", () => {
+  const reply = fromOpenAI({
+    id: "x", object: "chat.completion", created: 1, model: "x",
+    choices: [
+      {
+        index: 0,
+        message: { role: "assistant", content: null, refusal: null },
+        finish_reason: "stop",
+      },
+    ],
+  });
+  if (reply.message.role !== "assistant") throw new Error();
+  expect(reply.message.text).toBe("");
+});
+
+test("fromOpenAI: usage with only some token fields populates the others as 0", () => {
+  const reply = fromOpenAI({
+    id: "x", object: "chat.completion", created: 1, model: "x",
+    choices: [{ index: 0, message: { role: "assistant", content: "ok" }, finish_reason: "stop" }],
+    usage: { prompt_tokens: 5 },  // missing completion + total
+  });
+  expect(reply.usage?.promptTokens).toBe(5);
+  expect(reply.usage?.completionTokens).toBe(0);
+  expect(reply.usage?.totalTokens).toBe(0);
+});

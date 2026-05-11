@@ -315,3 +315,171 @@ test("anthropicProvider.sendStream: throws not-implemented for now", () => {
     }),
   ).toThrow(/not yet implemented/);
 });
+
+import { RateLimitError, AuthError } from "../src/errors.ts";
+
+test("anthropicProvider: baseUrl override changes the endpoint", async () => {
+  let capturedUrl = "";
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    capturedUrl = typeof input === "string" ? input : input.toString();
+    return new Response(JSON.stringify({
+      id: "x", type: "message", role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      model: "x", stop_reason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const provider = anthropicProvider(
+    { apiKey: "sk", baseUrl: "https://my-anthropic-proxy.test" },
+    { fetch: fetchImpl },
+  );
+  await provider.send({ model: "x", conversation: [{ role: "user", text: "x" }] });
+  expect(capturedUrl).toBe("https://my-anthropic-proxy.test/v1/messages");
+});
+
+test("anthropicProvider: anthropicVersion override changes the version header", async () => {
+  let capturedHeaders = new Headers();
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    capturedHeaders = new Headers(init?.headers);
+    return new Response(JSON.stringify({
+      id: "x", type: "message", role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      model: "x", stop_reason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const provider = anthropicProvider(
+    { apiKey: "sk", anthropicVersion: "2024-12-01" },
+    { fetch: fetchImpl },
+  );
+  await provider.send({ model: "x", conversation: [{ role: "user", text: "x" }] });
+  expect(capturedHeaders.get("anthropic-version")).toBe("2024-12-01");
+});
+
+test("anthropicProvider: 4xx errors are classified (AuthError on 401)", async () => {
+  const fetchImpl = (async () => new Response("", { status: 401 })) as unknown as typeof fetch;
+  const provider = anthropicProvider({ apiKey: "bad" }, { fetch: fetchImpl });
+  await expect(
+    provider.send({ model: "x", conversation: [{ role: "user", text: "x" }] }),
+  ).rejects.toBeInstanceOf(AuthError);
+});
+
+test("anthropicProvider: 429 with retry-after gives RateLimitError", async () => {
+  const fetchImpl = (async () =>
+    new Response("rate limited", {
+      status: 429,
+      headers: { "retry-after": "5" },
+    })) as unknown as typeof fetch;
+  const provider = anthropicProvider({ apiKey: "sk" }, { fetch: fetchImpl });
+  try {
+    await provider.send({ model: "x", conversation: [{ role: "user", text: "x" }] });
+    throw new Error("should have thrown");
+  } catch (err) {
+    expect(err).toBeInstanceOf(RateLimitError);
+    if (err instanceof RateLimitError) expect(err.retryAfterMs).toBe(5000);
+  }
+});
+
+test("anthropicProvider: tools forward to the wire as anthropic tools[] with input_schema", async () => {
+  let capturedBody = "";
+  const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    capturedBody = typeof init?.body === "string" ? init.body : "";
+    return new Response(JSON.stringify({
+      id: "x", type: "message", role: "assistant",
+      content: [{ type: "text", text: "ok" }],
+      model: "x", stop_reason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }), { status: 200 });
+  }) as unknown as typeof fetch;
+  const provider = anthropicProvider({ apiKey: "sk" }, { fetch: fetchImpl });
+  await provider.send({
+    model: "x",
+    conversation: [{ role: "user", text: "x" }],
+    tools: [lookupWeather],
+  });
+  const wire = JSON.parse(capturedBody);
+  expect(wire.tools[0].name).toBe("lookup_weather");
+  expect(wire.tools[0].input_schema.required).toEqual(["city"]);
+});
+
+test("toAnthropic: consecutive tool messages fold into a single user message with multiple blocks", () => {
+  const wire = toAnthropic({
+    conversation: [
+      { role: "user", text: "x" },
+      {
+        role: "assistant",
+        text: "",
+        toolCalls: [
+          { id: "c1", name: "lookup_weather", arguments: { city: "Tokyo" } },
+          { id: "c2", name: "lookup_weather", arguments: { city: "Berlin" } },
+        ],
+      },
+      { role: "tool", callId: "c1", result: { ok: true, content: "tokyo data" } },
+      { role: "tool", callId: "c2", result: { ok: true, content: "berlin data" } },
+    ],
+    model: "x",
+  });
+  // The two tool results should have been folded into a single user message,
+  // not appended as two separate user messages.
+  expect(wire.messages.length).toBe(3); // user, assistant(tool_use), user(2 tool_results)
+  const last = wire.messages[2];
+  expect(last?.role).toBe("user");
+  if (Array.isArray(last?.content)) {
+    expect(last.content.length).toBe(2);
+    expect(last.content[0]?.type).toBe("tool_result");
+    expect(last.content[1]?.type).toBe("tool_result");
+  } else {
+    throw new Error("expected array content");
+  }
+});
+
+test("toAnthropic: stream:true is emitted when set", () => {
+  const wire = toAnthropic({
+    conversation: [{ role: "user", text: "x" }],
+    model: "x",
+    stream: true,
+  });
+  expect(wire.stream).toBe(true);
+});
+
+test("toAnthropic: temperature: 0 is emitted (not dropped as falsy)", () => {
+  const wire = toAnthropic({
+    conversation: [{ role: "user", text: "x" }],
+    model: "x",
+    temperature: 0,
+  });
+  expect(wire.temperature).toBe(0);
+});
+
+test("fromAnthropic: empty content array is a valid (empty-text) reply", () => {
+  const reply = fromAnthropic({
+    id: "x", type: "message", role: "assistant",
+    content: [],
+    model: "x", stop_reason: "end_turn",
+    usage: { input_tokens: 1, output_tokens: 0 },
+  });
+  if (reply.message.role !== "assistant") throw new Error();
+  expect(reply.message.text).toBe("");
+  expect(reply.message.toolCalls).toBeUndefined();
+});
+
+test("fromAnthropic: stop_reason null maps to 'other'", () => {
+  const reply = fromAnthropic({
+    id: "x", type: "message", role: "assistant",
+    content: [{ type: "text", text: "x" }],
+    model: "x", stop_reason: null,
+    usage: { input_tokens: 1, output_tokens: 1 },
+  });
+  expect(reply.stopReason).toBe("other");
+});
+
+test("fromAnthropic: throws MorphismError when content is not an array", () => {
+  expect(() =>
+    fromAnthropic({
+      id: "x", type: "message", role: "assistant",
+      content: "garbage" as unknown as never,
+      model: "x", stop_reason: "end_turn",
+      usage: { input_tokens: 1, output_tokens: 1 },
+    }),
+  ).toThrow(/content/);
+});

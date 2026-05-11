@@ -114,8 +114,9 @@ async function spawnViaNode(opts: StdioTransportOptions): Promise<McpTransport> 
   );
 }
 
-/** Common framing logic: take a write fn + readable stdout, expose McpTransport. */
-function wireUpTransport(
+/** Common framing logic: take a write fn + readable stdout, expose McpTransport.
+ *  Exported so tests can drive framing without a real subprocess. */
+export function wireUpTransport(
   writeBytes: (bytes: Uint8Array) => Promise<void>,
   stdout: ReadableStream<Uint8Array>,
   closeFn: () => Promise<void>,

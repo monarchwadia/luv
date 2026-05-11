@@ -101,3 +101,56 @@ test("ServiceUnavailableError.hint mentions retry with backoff", () => {
   const err = new ServiceUnavailableError(503, "");
   expect(err.hint).toMatch(/retry|backoff/i);
 });
+
+test("classifyError: 403 also maps to AuthError (not just 401)", () => {
+  expect(classifyError(403, "", null)).toBeInstanceOf(AuthError);
+});
+
+test("classifyError: RateLimitError without retry-after has retryAfterMs undefined", () => {
+  const err = classifyError(429, "", null);
+  if (!(err instanceof RateLimitError)) throw new Error("expected RateLimitError");
+  expect(err.retryAfterMs).toBeUndefined();
+});
+
+test("classifyError: malformed JSON body still classifies by status alone", () => {
+  // body isn't JSON; should still get the right subclass for the status.
+  expect(classifyError(429, "definitely not json", null)).toBeInstanceOf(RateLimitError);
+  expect(classifyError(401, "<html>error</html>", null)).toBeInstanceOf(AuthError);
+  expect(classifyError(503, "Service Unavailable", null)).toBeInstanceOf(ServiceUnavailableError);
+});
+
+test("classifyError: 400 with content_filter (alternate spelling 'content_filter') is detected via code", () => {
+  const body = JSON.stringify({ error: { code: "content_filter" } });
+  expect(classifyError(400, body, null)).toBeInstanceOf(ContentFilterError);
+});
+
+test("classifyError: 599 (non-standard 5xx) still maps to ServiceUnavailableError", () => {
+  expect(classifyError(599, "", null)).toBeInstanceOf(ServiceUnavailableError);
+});
+
+test("classifyError: 500 status with no body maps to ServiceUnavailableError", () => {
+  const err = classifyError(500, "", null);
+  expect(err).toBeInstanceOf(ServiceUnavailableError);
+  expect(err.status).toBe(500);
+});
+
+test("classifyError: invalid retry-after value falls back to undefined retryAfterMs", () => {
+  const err = classifyError(429, "", "garbage");
+  if (!(err instanceof RateLimitError)) throw new Error("expected RateLimitError");
+  expect(err.retryAfterMs).toBeUndefined();
+});
+
+test("classifyError: HTTP-date in the past clamps retryAfterMs to 0", () => {
+  const past = new Date(Date.now() - 60_000).toUTCString();
+  const err = classifyError(429, "", past);
+  if (!(err instanceof RateLimitError)) throw new Error();
+  expect(err.retryAfterMs).toBe(0);
+});
+
+test("HttpError.body holds the FULL body (not truncated like .message)", () => {
+  const long = "x".repeat(500);
+  const err = new HttpError(500, long);
+  expect(err.body.length).toBe(500);
+  // .message is truncated to <= 250 chars (200 body + prefix)
+  expect(err.message.length).toBeLessThan(300);
+});
