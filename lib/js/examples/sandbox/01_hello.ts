@@ -1,7 +1,9 @@
 // One-shot send to a model. Edit and re-run.
 //
-//   cd lib/js && bun run sandbox examples/sandbox/01_hello.ts
+//   bun 01_hello.ts                                  (from this directory)
+//   cd lib/js && bun run sandbox examples/sandbox/01_hello.ts   (from lib/js)
 
+import "./_env.ts";
 import { send } from "../../src/index.ts";
 
 const apiKey = process.env["OPENAI_API_KEY"];

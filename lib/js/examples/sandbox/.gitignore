@@ -1,5 +1,6 @@
 # Your scratch files stay local by default. Numbered starters (NN_*.ts)
-# are tracked as a reference; anything else is yours to play with.
+# and the _env.ts helper are tracked; anything else is yours to play with.
 *
 !.gitignore
+!_env.ts
 !0?_*.ts

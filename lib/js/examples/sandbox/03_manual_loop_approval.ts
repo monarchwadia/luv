@@ -2,8 +2,10 @@
 // before they run. This is the "approval gate" pattern — pure data
 // flowing through pendingToolCalls + respondToToolCall.
 //
-//   cd lib/js && bun run sandbox examples/sandbox/03_manual_loop_approval.ts
+//   bun 03_manual_loop_approval.ts                                  (from this directory)
+//   cd lib/js && bun run sandbox examples/sandbox/03_manual_loop_approval.ts   (from lib/js)
 
+import "./_env.ts";
 import {
   anthropicProvider,
   pendingToolCalls,

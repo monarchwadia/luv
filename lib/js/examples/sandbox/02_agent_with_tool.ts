@@ -1,7 +1,9 @@
 // runAgent loop with one tool, showing the colocated tool-result shape.
 //
-//   cd lib/js && bun run sandbox examples/sandbox/02_agent_with_tool.ts
+//   bun 02_agent_with_tool.ts                                  (from this directory)
+//   cd lib/js && bun run sandbox examples/sandbox/02_agent_with_tool.ts   (from lib/js)
 
+import "./_env.ts";
 import { runAgent, anthropicProvider, tool, pendingToolCalls } from "../../src/index.ts";
 
 const apiKey = process.env["ANTHROPIC_API_KEY"];
