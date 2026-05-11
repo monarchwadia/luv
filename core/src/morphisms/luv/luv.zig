@@ -6,7 +6,7 @@
 
 const std = @import("std");
 
-pub const Role = enum { system, user, assistant, tool };
+pub const Role = enum { system, user, assistant };
 
 pub const StopReason = enum {
     end_turn,
@@ -28,10 +28,16 @@ pub const ToolResult = union(enum) {
 /// Provider says "please call this tool with these arguments".
 /// `arguments` is the parsed JSON the model emitted; lifetime tied to the
 /// parser arena that produced it.
+///
+/// `result` is set once the call has been resolved (by an agent loop, by a
+/// human approver, by a cache hit, by a synthetic stub — anyone). Null
+/// means the call is still pending. Colocating the result with the call
+/// kills the need for a separate `.tool` message variant downstream.
 pub const ToolCall = struct {
     id: []const u8,
     name: []const u8,
     arguments: std.json.Value,
+    result: ?ToolResult = null,
 };
 
 /// Tool definition: what an agent can call. Handler is wired by the agent
@@ -47,18 +53,18 @@ pub const Tool = struct {
 
 /// Conversation message.
 ///
-/// Flat shape with optional fields rather than a tagged union, so existing
-/// code that just reads `.role` and `.text` keeps working. The variants:
-///   - system / user:    text set, others empty/null
-///   - assistant:        text set; tool_calls non-empty when the model is
-///                       requesting tool execution
-///   - tool:             call_id + result set; text empty
+/// Flat shape with optional `tool_calls` rather than a tagged union. The
+/// variants:
+///   - system / user:  text set, no tool_calls
+///   - assistant:      text set; tool_calls non-empty when the model is
+///                     requesting tool execution. Each ToolCall carries
+///                     its own `result` field (null = pending, set =
+///                     resolved). There is no separate `.tool` role —
+///                     results live with the call that produced them.
 pub const Message = struct {
     role: Role,
     text: []const u8 = "",
     tool_calls: []const ToolCall = &.{},
-    call_id: ?[]const u8 = null,
-    result: ?ToolResult = null,
 };
 
 /// A conversation is just a slice of messages — pure data.
@@ -186,16 +192,26 @@ test "Assistant Message can carry tool_calls" {
     try testing.expectEqualStrings("c1", m.tool_calls[0].id);
 }
 
-test "Tool Message carries call_id and result, no text" {
-    const m: Message = .{
-        .role = .tool,
-        .call_id = "c1",
+test "Resolved tool call carries its result inline on the ToolCall" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const args = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{}", .{});
+
+    const calls = [_]ToolCall{.{
+        .id = "c1",
+        .name = "lookup_weather",
+        .arguments = args,
         .result = .{ .ok = "{\"temp_c\":18}" },
+    }};
+    const m: Message = .{
+        .role = .assistant,
+        .text = "",
+        .tool_calls = &calls,
     };
-    try testing.expectEqual(Role.tool, m.role);
-    try testing.expectEqualStrings("c1", m.call_id.?);
-    try testing.expectEqualStrings("", m.text);
-    switch (m.result.?) {
+    try testing.expectEqual(Role.assistant, m.role);
+    try testing.expectEqual(@as(usize, 1), m.tool_calls.len);
+    try testing.expectEqualStrings("c1", m.tool_calls[0].id);
+    switch (m.tool_calls[0].result.?) {
         .ok => |content| try testing.expectEqualStrings("{\"temp_c\":18}", content),
         .err => try testing.expect(false),
     }
@@ -205,20 +221,24 @@ test "Conversation can mix all message variants" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const args = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"city\":\"Tokyo\"}", .{});
-    const calls = [_]ToolCall{.{ .id = "c1", .name = "lookup_weather", .arguments = args }};
+    const calls = [_]ToolCall{.{
+        .id = "c1",
+        .name = "lookup_weather",
+        .arguments = args,
+        .result = .{ .ok = "{\"temp_c\":18}" },
+    }};
 
     const conv = [_]Message{
         .{ .role = .system, .text = "be terse" },
         .{ .role = .user, .text = "weather in Tokyo?" },
         .{ .role = .assistant, .text = "checking…", .tool_calls = &calls },
-        .{ .role = .tool, .call_id = "c1", .result = .{ .ok = "{\"temp_c\":18}" } },
         .{ .role = .assistant, .text = "It's 18°C in Tokyo." },
     };
 
-    try testing.expectEqual(@as(usize, 5), conv.len);
+    try testing.expectEqual(@as(usize, 4), conv.len);
     try testing.expectEqual(Role.system, conv[0].role);
     try testing.expectEqual(Role.assistant, conv[2].role);
     try testing.expectEqual(@as(usize, 1), conv[2].tool_calls.len);
-    try testing.expectEqual(Role.tool, conv[3].role);
-    try testing.expectEqualStrings("c1", conv[3].call_id.?);
+    try testing.expect(conv[2].tool_calls[0].result != null);
+    try testing.expectEqual(Role.assistant, conv[3].role);
 }

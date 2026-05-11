@@ -117,21 +117,23 @@ pub fn runAgent(opts: AgentOptions, alloc: std.mem.Allocator) !AgentResult {
 
         try conversation.append(alloc, reply.message);
 
-        const calls = if (reply.message.role == .assistant) reply.message.tool_calls else &.{};
-        if (calls.len == 0) return finish(&conversation, alloc, .end_turn, iterations, opts);
+        const reply_calls = if (reply.message.role == .assistant) reply.message.tool_calls else &.{};
+        if (reply_calls.len == 0) return finish(&conversation, alloc, .end_turn, iterations, opts);
 
-        for (calls) |call| {
+        // Take ownership of the just-appended message's tool_calls so we
+        // can write resolved results back onto the calls themselves.
+        const owned_calls = try alloc.alloc(luv.ToolCall, reply_calls.len);
+        for (reply_calls, 0..) |c, i| owned_calls[i] = c;
+        conversation.items[conversation.items.len - 1].tool_calls = owned_calls;
+
+        for (owned_calls, 0..) |call, idx| {
             if (opts.on_tool_call) |hook| hook(opts.hook_ctx, call);
             const result = executeToolCall(opts.tools, call, alloc) catch |err| blk: {
                 const msg = try std.fmt.allocPrint(alloc, "{s}", .{@errorName(err)});
                 break :blk luv.ToolResult{ .err = msg };
             };
             if (opts.on_tool_result) |hook| hook(opts.hook_ctx, call, result);
-            try conversation.append(alloc, .{
-                .role = .tool,
-                .call_id = call.id,
-                .result = result,
-            });
+            owned_calls[idx].result = result;
         }
     }
 }
@@ -271,8 +273,6 @@ const ScenarioReplyParser = struct {
             .user
         else if (std.mem.eql(u8, role_str, "system"))
             .system
-        else if (std.mem.eql(u8, role_str, "tool"))
-            .tool
         else
             return error.UnknownRole;
         const text = if (msg.get("text")) |t| t.string else "";
@@ -407,14 +407,20 @@ test "runAgent: 002 tool round trip — appends assistant + tool result + final 
 
     try testing.expectEqual(AgentFinishReason.end_turn, result.reason);
     try testing.expectEqual(@as(u32, 2), result.iterations);
-    try testing.expectEqual(@as(usize, 4), result.conversation.len);
+    // Tool result is colocated on the assistant message that emitted the call;
+    // no separate `.tool` message. Conversation: user, assistant(+resolved call), assistant-final.
+    try testing.expectEqual(@as(usize, 3), result.conversation.len);
     try testing.expectEqual(luv.Role.user, result.conversation[0].role);
     try testing.expectEqual(luv.Role.assistant, result.conversation[1].role);
     try testing.expectEqual(@as(usize, 1), result.conversation[1].tool_calls.len);
-    try testing.expectEqual(luv.Role.tool, result.conversation[2].role);
-    try testing.expectEqualStrings("call_abc123", result.conversation[2].call_id.?);
-    try testing.expectEqual(luv.Role.assistant, result.conversation[3].role);
-    try testing.expect(std.mem.indexOf(u8, result.conversation[3].text, "Tokyo") != null);
+    try testing.expectEqualStrings("call_abc123", result.conversation[1].tool_calls[0].id);
+    try testing.expect(result.conversation[1].tool_calls[0].result != null);
+    switch (result.conversation[1].tool_calls[0].result.?) {
+        .ok => |s| try testing.expect(std.mem.indexOf(u8, s, "18") != null),
+        .err => try testing.expect(false),
+    }
+    try testing.expectEqual(luv.Role.assistant, result.conversation[2].role);
+    try testing.expect(std.mem.indexOf(u8, result.conversation[2].text, "Tokyo") != null);
 }
 
 test "runAgent: 003 hits max_iterations cap" {
@@ -460,9 +466,12 @@ test "runAgent: 003 hits max_iterations cap" {
 
     try testing.expectEqual(AgentFinishReason.max_iterations, result.reason);
     try testing.expectEqual(@as(u32, 3), result.iterations);
-    // Last message in conversation should be a tool result (loop bailed before next send).
+    // Two turns of (assistant + colocated tool result) = user + 2 assistants.
+    try testing.expectEqual(@as(usize, 3), result.conversation.len);
     const last = result.conversation[result.conversation.len - 1];
-    try testing.expectEqual(luv.Role.tool, last.role);
+    try testing.expectEqual(luv.Role.assistant, last.role);
+    try testing.expectEqual(@as(usize, 1), last.tool_calls.len);
+    try testing.expect(last.tool_calls[0].result != null);
 }
 
 test "runAgent: unknown tool produces err result" {
@@ -493,13 +502,17 @@ test "runAgent: unknown tool produces err result" {
     }, arena);
 
     try testing.expectEqual(AgentFinishReason.end_turn, result.reason);
-    // Find the tool message; its result should be .err
+    // Walk the assistant messages, find the call whose colocated result is .err.
     var found_err = false;
     for (result.conversation) |m| {
-        if (m.role == .tool) {
-            if (m.result.? == .err) {
-                found_err = true;
-                try testing.expect(std.mem.indexOf(u8, m.result.?.err, "no_such_tool") != null);
+        if (m.role != .assistant) continue;
+        for (m.tool_calls) |c| {
+            const r = c.result orelse continue;
+            switch (r) {
+                .err => |msg| {
+                    if (std.mem.indexOf(u8, msg, "no_such_tool") != null) found_err = true;
+                },
+                .ok => {},
             }
         }
     }

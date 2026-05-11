@@ -46,14 +46,10 @@
         {
           "id": "call_abc123",
           "name": "lookup_weather",
-          "arguments": { "city": "Tokyo" }
+          "arguments": { "city": "Tokyo" },
+          "result": { "ok": true, "content": "{\"temp_c\":18,\"condition\":\"sunny\"}" }
         }
       ]
-    },
-    {
-      "role": "tool",
-      "callId": "call_abc123",
-      "result": { "ok": true, "content": "{\"temp_c\":18,\"condition\":\"sunny\"}" }
     },
     { "role": "assistant", "text": "It's 18°C and sunny in Tokyo." }
   ],

@@ -57,10 +57,14 @@ test("agentStep: tool call reply → done=false, continue", async () => {
   });
   expect(result.done).toBe(false);
   expect(result.reason).toBe("continue");
-  // assistant + 1 tool result message
-  expect(result.newMessages.length).toBe(2);
-  expect(result.newMessages[0]?.role).toBe("assistant");
-  expect(result.newMessages[1]?.role).toBe("tool");
+  // Single assistant message with colocated tool result on its toolCall.
+  expect(result.newMessages.length).toBe(1);
+  const m = result.newMessages[0]!;
+  expect(m.role).toBe("assistant");
+  if (m.role === "assistant") {
+    expect(m.toolCalls?.length).toBe(1);
+    expect(m.toolCalls?.[0]?.result).toBeDefined();
+  }
 });
 
 test("agentStep: caller drives the loop, can intervene between steps", async () => {
@@ -90,14 +94,16 @@ test("agentStep: caller drives the loop, can intervene between steps", async () 
       tools: [echoTool],
     });
     conv = [...conv, ...step.newMessages];
-    // Caller intervention: track if a tool message was just added
+    // Caller intervention: track when an assistant message gains a resolved tool call.
     const last = step.newMessages[step.newMessages.length - 1];
-    if (last?.role === "tool") interventions.push("saw tool result");
+    if (last?.role === "assistant" && last.toolCalls?.some((c) => c.result !== undefined)) {
+      interventions.push("saw tool result");
+    }
     if (step.done) break;
   }
 
   expect(interventions).toEqual(["saw tool result"]);
-  expect(conv.length).toBe(4); // user + assistant(call) + tool + assistant(text)
+  expect(conv.length).toBe(3); // user + assistant(call+result) + assistant(text)
   const last = conv[conv.length - 1];
   expect(last?.role).toBe("assistant");
   if (last?.role === "assistant") expect(last.text).toBe("all done");

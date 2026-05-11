@@ -132,11 +132,6 @@ export class MorphismError extends Error {
 export function toOpenAI(opts: ToOpenAIOptions): OpenAIWireRequest {
   const messages: OpenAIWireMessage[] = [];
   for (const m of opts.conversation) {
-    if (m.role === "tool") {
-      const content = m.result.ok ? m.result.content : `Error: ${m.result.error}`;
-      messages.push({ role: "tool", tool_call_id: m.callId, content });
-      continue;
-    }
     if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
       const wireCalls: OpenAIWireToolCall[] = m.toolCalls.map((c) => ({
         id: c.id,
@@ -152,6 +147,15 @@ export function toOpenAI(opts: ToOpenAIOptions): OpenAIWireRequest {
       // tool_calls; we omit it for cleaner cross-implementation parity.
       if (m.text !== "") wireMsg.content = m.text;
       messages.push(wireMsg);
+      // Split colocated → wire: emit one tool message per resolved call.
+      // Pending calls (result === undefined) emit nothing.
+      for (const c of m.toolCalls) {
+        if (c.result === undefined) continue;
+        const content = c.result.ok
+          ? c.result.content
+          : `Error: ${c.result.error}`;
+        messages.push({ role: "tool", tool_call_id: c.id, content });
+      }
       continue;
     }
     messages.push({ role: m.role, content: m.text });

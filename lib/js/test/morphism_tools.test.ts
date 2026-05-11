@@ -48,6 +48,8 @@ test("fromOpenAI: 020 — parses tool_calls into Reply.message.toolCalls + tool_
 });
 
 test("toOpenAI: 021 — round-trip serializes assistant.toolCalls + tool result message", async () => {
+  // Colocated form: result lives on the ToolCall. Morphism splits to wire
+  // shape (assistant + separate {role:"tool"} wire message).
   const conv: Conversation = [
     { role: "user", text: "What's the weather in Tokyo?" },
     {
@@ -58,13 +60,9 @@ test("toOpenAI: 021 — round-trip serializes assistant.toolCalls + tool result 
           id: "call_abc123",
           name: "lookup_weather",
           arguments: { city: "Tokyo" },
+          result: { ok: true, content: '{"temp_c":18,"condition":"sunny"}' },
         },
       ],
-    },
-    {
-      role: "tool",
-      callId: "call_abc123",
-      result: { ok: true, content: '{"temp_c":18,"condition":"sunny"}' },
     },
   ];
   const wire = toOpenAI({
@@ -109,12 +107,12 @@ test("toOpenAI: tool result with ok=false serializes the error as content", () =
     {
       role: "assistant",
       text: "",
-      toolCalls: [{ id: "c1", name: "lookup_weather", arguments: { city: "Tokyo" } }],
-    },
-    {
-      role: "tool",
-      callId: "c1",
-      result: { ok: false, error: "city not found" },
+      toolCalls: [{
+        id: "c1",
+        name: "lookup_weather",
+        arguments: { city: "Tokyo" },
+        result: { ok: false, error: "city not found" },
+      }],
     },
   ];
   const wire = toOpenAI({ conversation: conv, model: "gpt-4o-mini" });

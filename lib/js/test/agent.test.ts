@@ -97,11 +97,14 @@ test("runAgent: 003 hits max_iterations cap when model keeps requesting tools", 
     maxIterations: s.max_iterations,
   });
   expect(result.reason).toBe("max_iterations");
-  // After 2 iterations of (assistant tool_call + tool_result), iteration counter is 3 when we check the cap.
   expect(result.iterations).toBe(s.expected_iterations);
-  // Last message is the second tool result (loop bailed before the third send).
+  // Last message is the second assistant message (with colocated tool result on its call).
   const last = result.conversation[result.conversation.length - 1]!;
-  expect(last.role).toBe("tool");
+  expect(last.role).toBe("assistant");
+  if (last.role === "assistant") {
+    expect(last.toolCalls?.length).toBe(1);
+    expect(last.toolCalls?.[0]?.result).toBeDefined();
+  }
 });
 
 test("runAgent: lifecycle hooks fire for each turn / tool call / result / finish", async () => {
@@ -171,12 +174,14 @@ test("runAgent: unknown tool name produces ok=false tool result", async () => {
     maxIterations: 5,
   });
   expect(result.reason).toBe("end_turn");
-  // Conversation should have the tool result message with ok=false
-  const toolMsg = result.conversation.find((m) => m.role === "tool");
-  expect(toolMsg).toBeDefined();
-  if (toolMsg && toolMsg.role === "tool") {
-    expect(toolMsg.result.ok).toBe(false);
-    if (!toolMsg.result.ok) expect(toolMsg.result.error).toContain("no_such_tool");
+  // Find the resolved call across all assistant messages.
+  const resolvedCall = result.conversation
+    .flatMap((m) => (m.role === "assistant" ? (m.toolCalls ?? []) : []))
+    .find((c) => c.result !== undefined);
+  expect(resolvedCall).toBeDefined();
+  expect(resolvedCall?.result?.ok).toBe(false);
+  if (resolvedCall?.result && !resolvedCall.result.ok) {
+    expect(resolvedCall.result.error).toContain("no_such_tool");
   }
 });
 
@@ -291,11 +296,13 @@ test("runAgent: tool handler that throws becomes ok=false ToolResult, loop conti
     tools: [throwingTool],
   });
   expect(result.reason).toBe("end_turn");
-  const toolMsg = result.conversation.find((m) => m.role === "tool");
-  expect(toolMsg).toBeDefined();
-  if (toolMsg && toolMsg.role === "tool") {
-    expect(toolMsg.result.ok).toBe(false);
-    if (!toolMsg.result.ok) expect(toolMsg.result.error).toContain("kaboom");
+  const resolvedCall = result.conversation
+    .flatMap((m) => (m.role === "assistant" ? (m.toolCalls ?? []) : []))
+    .find((c) => c.result !== undefined);
+  expect(resolvedCall).toBeDefined();
+  expect(resolvedCall?.result?.ok).toBe(false);
+  if (resolvedCall?.result && !resolvedCall.result.ok) {
+    expect(resolvedCall.result.error).toContain("kaboom");
   }
 });
 
@@ -374,13 +381,15 @@ test("runAgent: parallel tool results appear in the order matching the call orde
     conversation: [{ role: "user", text: "x" }],
     tools: [recordTool("fast", 1), recordTool("slow", 30)],
   });
-  // Find the tool messages in order; their callIds should match the call order
-  // even though "slow" finished last in real time.
-  const toolMsgs = result.conversation.filter((m) => m.role === "tool");
-  expect(toolMsgs.length).toBe(3);
-  if (toolMsgs[0]?.role === "tool") expect(toolMsgs[0].callId).toBe("a");
-  if (toolMsgs[1]?.role === "tool") expect(toolMsgs[1].callId).toBe("b");
-  if (toolMsgs[2]?.role === "tool") expect(toolMsgs[2].callId).toBe("c");
+  // Find the assistant message that carried the calls; its resolved toolCalls
+  // should be in the original call order even though "slow" finished last.
+  const calls = result.conversation
+    .flatMap((m) => (m.role === "assistant" ? (m.toolCalls ?? []) : []))
+    .filter((c) => c.result !== undefined);
+  expect(calls.length).toBe(3);
+  expect(calls[0]?.id).toBe("a");
+  expect(calls[1]?.id).toBe("b");
+  expect(calls[2]?.id).toBe("c");
 });
 
 test("runAgent: provider.send receives the cumulative conversation, not just the original", async () => {
@@ -415,6 +424,6 @@ test("runAgent: provider.send receives the cumulative conversation, not just the
     tools: [noopTool],
   });
   // 1st send: 1 message (user)
-  // 2nd send: 3 messages (user + assistant + tool result)
-  expect(seenLengths).toEqual([1, 3]);
+  // 2nd send: 2 messages (user + assistant; result colocated on the call).
+  expect(seenLengths).toEqual([1, 2]);
 });

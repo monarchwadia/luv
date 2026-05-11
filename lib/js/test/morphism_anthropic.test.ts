@@ -104,17 +104,19 @@ test("toAnthropic: assistant with toolCalls and empty text emits only tool_use b
 });
 
 test("toAnthropic: tool result becomes a user message with tool_result block", () => {
+  // Colocated form: result lives on the ToolCall itself. Morphism splits
+  // the wire form (assistant tool_use → user tool_result).
   const conv: Conversation = [
     { role: "user", text: "weather in tokyo?" },
     {
       role: "assistant",
       text: "",
-      toolCalls: [{ id: "c1", name: "lookup_weather", arguments: { city: "Tokyo" } }],
-    },
-    {
-      role: "tool",
-      callId: "c1",
-      result: { ok: true, content: '{"temp_c":18}' },
+      toolCalls: [{
+        id: "c1",
+        name: "lookup_weather",
+        arguments: { city: "Tokyo" },
+        result: { ok: true, content: '{"temp_c":18}' },
+      }],
     },
   ];
   const wire = toAnthropic({ conversation: conv, model: "x" });
@@ -132,9 +134,13 @@ test("toAnthropic: tool error is marked is_error: true", () => {
       {
         role: "assistant",
         text: "",
-        toolCalls: [{ id: "c1", name: "lookup_weather", arguments: {} }],
+        toolCalls: [{
+          id: "c1",
+          name: "lookup_weather",
+          arguments: {},
+          result: { ok: false, error: "boom" },
+        }],
       },
-      { role: "tool", callId: "c1", result: { ok: false, error: "boom" } },
     ],
     model: "x",
   });
@@ -402,7 +408,7 @@ test("anthropicProvider: tools forward to the wire as anthropic tools[] with inp
   expect(wire.tools[0].input_schema.required).toEqual(["city"]);
 });
 
-test("toAnthropic: consecutive tool messages fold into a single user message with multiple blocks", () => {
+test("toAnthropic: consecutive tool results fold into a single user message with multiple blocks", () => {
   const wire = toAnthropic({
     conversation: [
       { role: "user", text: "x" },
@@ -410,12 +416,20 @@ test("toAnthropic: consecutive tool messages fold into a single user message wit
         role: "assistant",
         text: "",
         toolCalls: [
-          { id: "c1", name: "lookup_weather", arguments: { city: "Tokyo" } },
-          { id: "c2", name: "lookup_weather", arguments: { city: "Berlin" } },
+          {
+            id: "c1",
+            name: "lookup_weather",
+            arguments: { city: "Tokyo" },
+            result: { ok: true, content: "tokyo data" },
+          },
+          {
+            id: "c2",
+            name: "lookup_weather",
+            arguments: { city: "Berlin" },
+            result: { ok: true, content: "berlin data" },
+          },
         ],
       },
-      { role: "tool", callId: "c1", result: { ok: true, content: "tokyo data" } },
-      { role: "tool", callId: "c2", result: { ok: true, content: "berlin data" } },
     ],
     model: "x",
   });

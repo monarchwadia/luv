@@ -1,5 +1,6 @@
 pub const luv = @import("morphisms/luv/luv.zig");
 pub const luv_stream = @import("morphisms/luv/luv_stream.zig");
+pub const luv_tool_calls = @import("morphisms/luv/tool_calls.zig");
 pub const openai = @import("morphisms/openai/openai.zig");
 pub const openai_stream = @import("morphisms/openai/openai_stream.zig");
 pub const transport = @import("transport/transport.zig");
@@ -31,6 +32,7 @@ export fn greet_len() usize {
 test {
     _ = luv;
     _ = luv_stream;
+    _ = luv_tool_calls;
     _ = openai;
     _ = openai_stream;
     _ = transport;

@@ -72,15 +72,22 @@ test("Message assistant can carry toolCalls", () => {
   } else throw new Error("narrowing failed");
 });
 
-test("Message tool variant: callId + result, no text", () => {
+test("Resolved tool call carries its result inline on the ToolCall", () => {
   const m: Message = {
-    role: "tool",
-    callId: "c1",
-    result: { ok: true, content: '{"temp_c":18}' },
+    role: "assistant",
+    text: "",
+    toolCalls: [{
+      id: "c1",
+      name: "lookup_weather",
+      arguments: { city: "Tokyo" },
+      result: { ok: true, content: '{"temp_c":18}' },
+    }],
   };
-  if (m.role === "tool") {
-    expect(m.callId).toBe("c1");
-    if (m.result.ok) expect(m.result.content).toContain("temp_c");
+  if (m.role === "assistant") {
+    const c = m.toolCalls?.[0]!;
+    expect(c.id).toBe("c1");
+    expect(c.result).toBeDefined();
+    if (c.result?.ok) expect(c.result.content).toContain("temp_c");
     else throw new Error("expected ok result");
   } else throw new Error("narrowing failed");
 });
@@ -92,16 +99,23 @@ test("Conversation can mix all message variants in order", () => {
     {
       role: "assistant",
       text: "checking…",
-      toolCalls: [{ id: "c1", name: "lookup_weather", arguments: { city: "Tokyo" } }],
+      toolCalls: [{
+        id: "c1",
+        name: "lookup_weather",
+        arguments: { city: "Tokyo" },
+        result: { ok: true, content: '{"temp_c":18}' },
+      }],
     },
-    { role: "tool", callId: "c1", result: { ok: true, content: '{"temp_c":18}' } },
     { role: "assistant", text: "It's 18°C in Tokyo." },
   ];
-  expect(conv.length).toBe(5);
+  expect(conv.length).toBe(4);
   expect(conv[0]!.role).toBe("system");
   expect(conv[2]!.role).toBe("assistant");
-  if (conv[2]!.role === "assistant") expect(conv[2]!.toolCalls?.length).toBe(1);
-  expect(conv[3]!.role).toBe("tool");
+  if (conv[2]!.role === "assistant") {
+    expect(conv[2]!.toolCalls?.length).toBe(1);
+    expect(conv[2]!.toolCalls?.[0]?.result).toBeDefined();
+  }
+  expect(conv[3]!.role).toBe("assistant");
 });
 
 test("Provider interface has send + sendStream signatures", () => {

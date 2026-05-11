@@ -114,7 +114,6 @@ fn roleToString(r: luv.Role) []const u8 {
         .system => "system",
         .user => "user",
         .assistant => "assistant",
-        .tool => "tool",
     };
 }
 
@@ -139,22 +138,12 @@ pub fn toOpenAI(
     opts: Options,
     alloc: std.mem.Allocator,
 ) !Request {
-    const out = try alloc.alloc(RequestMessage, messages.len);
-    errdefer alloc.free(out);
-    for (messages, 0..) |m, i| {
-        if (m.role == .tool) {
-            const result = m.result.?;
-            const content: []const u8 = switch (result) {
-                .ok => |c| c,
-                .err => |e| try std.fmt.allocPrint(alloc, "Error: {s}", .{e}),
-            };
-            out[i] = .{
-                .role = "tool",
-                .content = content,
-                .tool_call_id = m.call_id,
-            };
-            continue;
-        }
+    // Output length is ≥ messages.len: every resolved tool call on an
+    // assistant message expands into one extra wire {role:"tool"} entry.
+    var out: std.ArrayList(RequestMessage) = .empty;
+    errdefer out.deinit(alloc);
+
+    for (messages) |m| {
         if (m.role == .assistant and m.tool_calls.len > 0) {
             const wire_calls = try alloc.alloc(RequestToolCall, m.tool_calls.len);
             for (m.tool_calls, 0..) |c, j| {
@@ -167,17 +156,32 @@ pub fn toOpenAI(
                     },
                 };
             }
-            out[i] = .{
+            try out.append(alloc, .{
                 .role = "assistant",
                 .content = if (m.text.len == 0) null else m.text,
                 .tool_calls = wire_calls,
-            };
+            });
+            // Split colocated → wire: emit one tool message per resolved
+            // call. Pending calls (result == null) emit nothing — the
+            // server expects results only for calls already executed.
+            for (m.tool_calls) |c| {
+                const result = c.result orelse continue;
+                const content: []const u8 = switch (result) {
+                    .ok => |s| s,
+                    .err => |e| try std.fmt.allocPrint(alloc, "Error: {s}", .{e}),
+                };
+                try out.append(alloc, .{
+                    .role = "tool",
+                    .content = content,
+                    .tool_call_id = c.id,
+                });
+            }
             continue;
         }
-        out[i] = .{
+        try out.append(alloc, .{
             .role = roleToString(m.role),
             .content = m.text,
-        };
+        });
     }
 
     var out_tools: ?[]ToolDef = null;
@@ -197,7 +201,7 @@ pub fn toOpenAI(
 
     return .{
         .model = opts.model,
-        .messages = out,
+        .messages = try out.toOwnedSlice(alloc),
         .max_tokens = opts.max_tokens,
         .temperature = opts.temperature,
         .stream = if (opts.stream) true else null,
@@ -442,11 +446,18 @@ test "to_openai: 021 round-trip serializes assistant.tool_calls + tool result me
 
     const schema = try schemaCity(arena);
     const args = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"city\":\"Tokyo\"}", .{});
-    const calls = [_]luv.ToolCall{.{ .id = "call_abc123", .name = "lookup_weather", .arguments = args }};
+    // Colocated form: result lives on the ToolCall itself. The morphism is
+    // responsible for splitting this into the wire's separate {role:"tool"}
+    // message at the boundary.
+    const calls = [_]luv.ToolCall{.{
+        .id = "call_abc123",
+        .name = "lookup_weather",
+        .arguments = args,
+        .result = .{ .ok = "{\"temp_c\":18,\"condition\":\"sunny\"}" },
+    }};
     const messages = [_]luv.Message{
         .{ .role = .user, .text = "What's the weather in Tokyo?" },
         .{ .role = .assistant, .text = "", .tool_calls = &calls },
-        .{ .role = .tool, .call_id = "call_abc123", .result = .{ .ok = "{\"temp_c\":18,\"condition\":\"sunny\"}" } },
     };
     const tools = [_]luv.Tool{.{
         .name = "lookup_weather",

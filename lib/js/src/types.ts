@@ -1,7 +1,7 @@
 // Canonical luv types — pure data, mirrors core/src/morphisms/luv/luv.zig.
 // All public types in luv-js flow through these.
 
-export type Role = "system" | "user" | "assistant" | "tool";
+export type Role = "system" | "user" | "assistant";
 
 export type StopReason =
   | "end_turn"
@@ -60,6 +60,9 @@ export interface ToolCall {
   readonly name: string;
   /** Already-parsed JSON arguments emitted by the model. */
   readonly arguments: unknown;
+  /** Present once the call has been resolved. Undefined ⇒ pending.
+   *  Colocating the result kills the need for a separate `.tool` message. */
+  readonly result?: ToolResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,8 +75,7 @@ export type Message =
       readonly role: "assistant";
       readonly text: string;
       readonly toolCalls?: readonly ToolCall[];
-    }
-  | { readonly role: "tool"; readonly callId: string; readonly result: ToolResult };
+    };
 
 export type Conversation = readonly Message[];
 

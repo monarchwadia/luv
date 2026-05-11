@@ -39,6 +39,7 @@ export {
 } from "./provider_anthropic.ts";
 export { tool, type ToolDef, type InferSchema } from "./tool.ts";
 export { parseArguments, ToolArgsError } from "./tool_args.ts";
+export { pendingToolCalls, respondToToolCall } from "./tool_calls.ts";
 export {
   generateObject,
   GenerateObjectError,

@@ -139,26 +139,24 @@ export function toAnthropic(opts: ToAnthropicOptions): AnthropicWireRequest {
           blocks.push({ type: "tool_use", id: c.id, name: c.name, input: c.arguments });
         }
         messages.push({ role: "assistant", content: blocks });
+
+        // Split colocated → wire: every resolved call becomes a
+        // tool_result block on a following user message (Anthropic's
+        // convention). Pending calls emit nothing.
+        const resultBlocks: AnthropicToolResultBlock[] = [];
+        for (const c of m.toolCalls) {
+          if (c.result === undefined) continue;
+          resultBlocks.push(c.result.ok
+            ? { type: "tool_result", tool_use_id: c.id, content: c.result.content }
+            : { type: "tool_result", tool_use_id: c.id, content: c.result.error, is_error: true });
+        }
+        if (resultBlocks.length > 0) {
+          messages.push({ role: "user", content: resultBlocks });
+        }
       } else {
         messages.push({ role: "assistant", content: m.text });
       }
       continue;
-    }
-    // tool message → folds into the previous user message (or starts a new one)
-    const block: AnthropicToolResultBlock = m.result.ok
-      ? { type: "tool_result", tool_use_id: m.callId, content: m.result.content }
-      : { type: "tool_result", tool_use_id: m.callId, content: m.result.error, is_error: true };
-    const last = messages[messages.length - 1];
-    if (last?.role === "user" && Array.isArray(last.content)) {
-      last.content.push(block);
-    } else if (last?.role === "user" && typeof last.content === "string") {
-      // Promote the previous text-only user message to blocks so we can append.
-      last.content = [
-        { type: "text", text: last.content },
-        block,
-      ];
-    } else {
-      messages.push({ role: "user", content: [block] });
     }
   }
 

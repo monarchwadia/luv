@@ -94,21 +94,29 @@ export async function agentStep(opts: AgentStepOptions): Promise<AgentStepResult
     return finish({ newMessages: [], done: true, reason: "aborted" });
   }
 
-  newMessages.push(reply.message);
-
   const callsRequested =
     reply.message.role === "assistant" ? (reply.message.toolCalls ?? []) : [];
 
-  if (callsRequested.length === 0) {
+  if (reply.message.role !== "assistant" || callsRequested.length === 0) {
+    newMessages.push(reply.message);
     return finish({ newMessages, done: true, reason: "end_turn" });
   }
 
   for (const c of callsRequested) opts.onToolCall?.(c);
   const results = await executeToolCalls(callsRequested, tools, opts.signal);
-  for (const { call, result } of results) {
-    opts.onToolResult?.(call, result);
-    newMessages.push({ role: "tool", callId: call.id, result });
-  }
+  for (const { call, result } of results) opts.onToolResult?.(call, result);
+
+  // Colocate results onto the calls themselves; emit one assistant message
+  // (with resolved toolCalls), not a follow-up `.tool` message.
+  const resolvedCalls: ToolCall[] = callsRequested.map((c) => {
+    const r = results.find((x) => x.call.id === c.id)!;
+    return { ...c, result: r.result };
+  });
+  newMessages.push({
+    role: "assistant",
+    text: reply.message.text,
+    toolCalls: resolvedCalls,
+  });
   return finish({ newMessages, done: false, reason: "continue" });
 }
 
@@ -193,28 +201,28 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
 
     if (opts.signal?.aborted) return done("aborted");
 
-    conversation = [...conversation, reply.message];
-
     const callsRequested =
       reply.message.role === "assistant" ? reply.message.toolCalls ?? [] : [];
 
-    if (callsRequested.length === 0) {
+    if (reply.message.role !== "assistant" || callsRequested.length === 0) {
+      conversation = [...conversation, reply.message];
       return done("end_turn");
     }
 
     // Execute all tool calls in parallel, with hooks.
-    const hookedTools = tools;
     for (const c of callsRequested) opts.onToolCall?.(c);
-    const results = await executeToolCalls(callsRequested, hookedTools, opts.signal);
+    const results = await executeToolCalls(callsRequested, tools, opts.signal);
     for (const { call, result } of results) opts.onToolResult?.(call, result);
 
+    // Colocate results onto the assistant message's toolCalls — no
+    // separate `.tool` follow-up message.
+    const resolvedCalls: ToolCall[] = callsRequested.map((c) => {
+      const r = results.find((x) => x.call.id === c.id)!;
+      return { ...c, result: r.result };
+    });
     conversation = [
       ...conversation,
-      ...results.map(({ call, result }): Message => ({
-        role: "tool",
-        callId: call.id,
-        result,
-      })),
+      { role: "assistant", text: reply.message.text, toolCalls: resolvedCalls },
     ];
   }
 
