@@ -1,0 +1,5 @@
+# Your scratch files stay local by default. Numbered starters (NN_*.ts)
+# are tracked as a reference; anything else is yours to play with.
+*
+!.gitignore
+!0?_*.ts

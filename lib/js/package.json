@@ -29,7 +29,8 @@
     "test": "bun test",
     "example:server": "bun run build && bun --env-file=../../.env run examples/server.ts",
     "example:agent": "bun --env-file=../../.env run examples/agent.ts",
-    "example:manual-loop": "bun --env-file=../../.env run examples/manual_loop.ts"
+    "example:manual-loop": "bun --env-file=../../.env run examples/manual_loop.ts",
+    "sandbox": "bun --env-file=../../.env run"
   },
   "dependencies": {},
   "devDependencies": {
