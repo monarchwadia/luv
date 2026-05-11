@@ -4,10 +4,28 @@
 //   cd lib/js && bun run sandbox examples/sandbox/02_agent_with_tool.ts   (from lib/js)
 
 import "./_env.ts";
-import { runAgent, anthropicProvider, tool, pendingToolCalls } from "../../src/index.ts";
+import { runAgent, openaiProvider, tool, pendingToolCalls, Conversation } from "../../src/index.ts";
 
-const apiKey = process.env["ANTHROPIC_API_KEY"];
-if (!apiKey) throw new Error("ANTHROPIC_API_KEY not in .env");
+const conv: Conversation = [
+  {
+    role: "user",
+    text: "What's the weather in Tokyo?",
+  },
+  {
+    role: "assistant",
+    text: "",
+    toolCalls: [
+      {
+        name: "lookup_weather",
+        id: "call-1",
+        arguments: { city: "Tokyo" }
+      }
+    ]
+  }
+]
+
+const apiKey = process.env["OPENAI_API_KEY"];
+if (!apiKey) throw new Error("OPENAI_API_KEY not in .env");
 
 const lookupWeather = tool({
   name: "lookup_weather",
@@ -24,8 +42,8 @@ const lookupWeather = tool({
 });
 
 const result = await runAgent({
-  provider: anthropicProvider({ apiKey }),
-  model: "claude-sonnet-4-6",
+  provider: openaiProvider({ apiKey }),
+  model: "gpt-4o-mini",
   conversation: [{ role: "user", text: "What's the weather in Tokyo?" }],
   tools: [lookupWeather],
 });

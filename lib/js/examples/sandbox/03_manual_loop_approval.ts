@@ -7,7 +7,7 @@
 
 import "./_env.ts";
 import {
-  anthropicProvider,
+  openaiProvider,
   pendingToolCalls,
   respondToToolCall,
   tool,
@@ -15,8 +15,8 @@ import {
   type ToolResult,
 } from "../../src/index.ts";
 
-const apiKey = process.env["ANTHROPIC_API_KEY"];
-if (!apiKey) throw new Error("ANTHROPIC_API_KEY not in .env");
+const apiKey = process.env["OPENAI_API_KEY"];
+if (!apiKey) throw new Error("OPENAI_API_KEY not in .env");
 
 const writeFile = tool({
   name: "write_file",
@@ -32,7 +32,7 @@ const writeFile = tool({
   },
 });
 
-const provider = anthropicProvider({ apiKey });
+const provider = openaiProvider({ apiKey });
 const tools = [writeFile];
 
 let conv: Conversation = [
@@ -42,7 +42,7 @@ let conv: Conversation = [
 for (let i = 0; i < 5; i++) {
   console.log(`--- turn ${i + 1} ---`);
 
-  const reply = await provider.send({ model: "claude-sonnet-4-6", conversation: conv, tools });
+  const reply = await provider.send({ model: "gpt-5.4", conversation: conv, tools });
   conv = [...conv, reply.message];
 
   const pending = pendingToolCalls(conv);
