@@ -435,6 +435,118 @@ async function summonLanternBearer(
 }
 
 // ===========================================================================
+// PRACTICES — the player's deterministic actions on their own engine.
+// Each practice is small. Real change comes from repetition. The narrations
+// are static (no LLM) so practices stay fast and cheap; the Voice is reserved
+// for summoned entities.
+
+function clamp(v: number, lo = 0, hi = 100): number {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function pick<T>(xs: readonly T[]): T {
+  return xs[Math.floor(Math.random() * xs.length)]!;
+}
+
+type PracticeEffect = Partial<Record<Factor, number>>;
+
+function applyEffect(engine: Engine, eff: PracticeEffect): void {
+  for (const [k, dv] of Object.entries(eff)) {
+    const f = k as Factor;
+    engine.factors[f] = clamp(engine.factors[f] + (dv as number));
+  }
+}
+
+function showEffect(eff: PracticeEffect): void {
+  const parts: string[] = [];
+  for (const [k, dv] of Object.entries(eff)) {
+    const v = dv as number;
+    const sign = v >= 0 ? "+" : "";
+    parts.push(`${k} ${sign}${v}`);
+  }
+  console.log(C.dim(`  [${parts.join(", ")}]`));
+}
+
+const PRACTICES = {
+  breathe: {
+    requires: () => null as string | null,
+    effect:   { mindfulness: 3, tension: -2 } as PracticeEffect,
+    lines: [
+      "three breaths. the room settles a half-shade.",
+      "you follow the breath in. and out. the body remembers.",
+      "a slow inhale; a slower exhale. tension loosens its grip.",
+    ],
+    logAs: "practiced anapanasati (breath).",
+  },
+  sit: {
+    requires: (e: Engine) => e.factors.energy >= 4 ? null : "too depleted to sit well",
+    effect:   { mindfulness: 6, equanimity: 3, tension: -3, energy: -3 } as PracticeEffect,
+    lines: [
+      "you sit. for a while there is restlessness, then a wider quiet.",
+      "the cushion. the spine. the breath. the room. things arrange themselves around being present.",
+      "a long sit. the mind wanders. the mind returns. the wandering itself is noticed.",
+    ],
+    logAs: "sat in formal practice.",
+  },
+  walk: {
+    requires: () => null,
+    effect:   { mindfulness: 2, energy: 2, tension: -3 } as PracticeEffect,
+    lines: [
+      "you walk slowly. each foot fall. the floor is solid. the floor is enough.",
+      "walking practice. step by step. there is no destination this minute.",
+      "you cross the room and back. small things become large under attention.",
+    ],
+    logAs: "walked mindfully.",
+  },
+  metta: {
+    requires: (e: Engine) => e.factors.energy >= 2 ? null : "no fuel for lovingkindness tonight",
+    effect:   { metta: 6, equanimity: 2, mindfulness: 1, energy: -1 } as PracticeEffect,
+    lines: [
+      "may i be safe. may i be at ease. the words land softer than expected.",
+      "metta toward self first. the practice resists. you keep going. the resistance is also held.",
+      "you offer lovingkindness. to yourself. to one you love. to one who is difficult. to all beings. each circle widens.",
+    ],
+    logAs: "practiced metta (lovingkindness).",
+  },
+  note: {
+    requires: () => null,
+    effect:   { mindfulness: 3, aversion: -2 } as PracticeEffect,
+    lines: [
+      "you note what is arising. 'thinking.' 'tension.' 'sound.' nothing is wrong; nothing is fixed.",
+      "noting practice. labels are light. they do not hold; they release.",
+      "you watch the contents of mind name themselves and pass.",
+    ],
+    logAs: "practiced noting.",
+  },
+  rest: {
+    requires: (e: Engine) => e.factors.energy < 80 ? null : "you are not tired",
+    effect:   { energy: 12, tension: -3, mindfulness: -2, metta: -1 } as PracticeEffect,
+    lines: [
+      "you lie back. the body is allowed to be heavy. the mind drifts.",
+      "you rest. not practicing now. just letting things be unattended.",
+      "you let the room hold you. nothing needs doing.",
+    ],
+    logAs: "rested.",
+  },
+} as const;
+
+type PracticeName = keyof typeof PRACTICES;
+
+function doPractice(engine: Engine, name: PracticeName): void {
+  const p = PRACTICES[name];
+  const why = p.requires(engine);
+  if (why) {
+    console.log(C.dim(`  (${why}.)`));
+    return;
+  }
+  applyEffect(engine, p.effect);
+  console.log("");
+  console.log(C.dim("  " + pick(p.lines)));
+  showEffect(p.effect);
+  engine.log.push(`Day ${engine.day}: ${p.logAs}`);
+}
+
+// ===========================================================================
 // MAIN LOOP
 
 function sleep(ms: number): Promise<void> {
@@ -446,7 +558,20 @@ function help(): void {
   console.log(C.dim("  commands:"));
   console.log(C.dim("    status         show the seeker's state"));
   console.log(C.dim("    light          light a candle (a component for ritual)"));
+  console.log("");
+  console.log(C.dim("  practices (these shift the engine):"));
+  console.log(C.dim("    breathe        three breaths"));
+  console.log(C.dim("    sit            formal sitting practice"));
+  console.log(C.dim("    walk           walking meditation"));
+  console.log(C.dim("    metta          lovingkindness toward self & others"));
+  console.log(C.dim("    note           noting practice (label what arises)"));
+  console.log(C.dim("    rest           lie back; recover energy"));
+  console.log("");
+  console.log(C.dim("  ritual:"));
   console.log(C.dim("    cast lantern   invocation of the Lantern-Bearer"));
+  console.log(C.dim("                   (requires a lit candle + mindfulness >= 25)"));
+  console.log("");
+  console.log(C.dim("  other:"));
   console.log(C.dim("    journal        recent events"));
   console.log(C.dim("    quit           end the session"));
   console.log("");
@@ -476,6 +601,10 @@ async function main(): Promise<void> {
       if (input === "journal") {
         if (engine.log.length === 0) console.log(C.dim("  (the journal is empty.)"));
         else for (const e of engine.log.slice(-10)) console.log(C.dim("  " + e));
+        continue;
+      }
+      if (input in PRACTICES) {
+        doPractice(engine, input as PracticeName);
         continue;
       }
       if (input === "cast lantern" || input === "cast") {
