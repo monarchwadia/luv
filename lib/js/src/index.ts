@@ -4,6 +4,7 @@
 
 export type {
   Conversation,
+  Decision,
   Event,
   LuvStream,
   Message,
@@ -11,6 +12,8 @@ export type {
   Role,
   SendOptions,
   SendStreamOptions,
+  Stage,
+  StageFn,
   StopReason,
 } from "./types.ts";
 
@@ -28,6 +31,7 @@ export { sendStream } from "./send_stream.ts";
 export {
   runAgent,
   agentStep,
+  describeWithStages,
   type AgentStepOptions,
   type AgentStepReason,
   type AgentStepResult,

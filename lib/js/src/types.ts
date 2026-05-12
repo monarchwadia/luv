@@ -53,6 +53,33 @@ export interface Tool {
   readonly description: string;
   readonly inputSchema: JSONSchema;
   readonly handler: (args: unknown, ctx: ToolContext) => Promise<ToolResult>;
+  /** Pre-handler stages run in array order before `handler`. Empty by default. */
+  readonly stages?: readonly Stage[];
+}
+
+/** Pre-handler decision returned by a Stage.
+ *   - run:        proceed to the next stage (or, after the last stage, the handler)
+ *   - deny:       short-circuit; the call resolves with `{ok:false, error}`. Handler not invoked.
+ *   - edit:       proceed with new arguments. Subsequent stages and the handler see the edit.
+ *   - synthesize: short-circuit; the call resolves with the given ToolResult. Handler not invoked. */
+export type Decision =
+  | { readonly kind: "run" }
+  | { readonly kind: "deny"; readonly error: string }
+  | { readonly kind: "edit"; readonly args: unknown }
+  | { readonly kind: "synthesize"; readonly result: ToolResult };
+
+export type StageFn = (
+  call: ToolCall,
+  ctx: ToolContext,
+) => Decision | Promise<Decision>;
+
+/** A pre-handler gate on a tool call. `kind` and `description` are sidecar
+ *  metadata so the agent can advertise stage info to the LLM via the tool's
+ *  wire description. */
+export interface Stage {
+  readonly kind: string;
+  readonly description?: string;
+  readonly fn: StageFn;
 }
 
 export interface ToolCall {

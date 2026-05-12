@@ -40,6 +40,34 @@ pub const ToolHandler = *const fn (
     alloc: std.mem.Allocator,
 ) anyerror!luv.ToolResult;
 
+/// Pre-handler decision returned by a Stage.
+///   - run:        proceed to the next stage (or, after the last stage, the handler)
+///   - deny:       short-circuit; the call resolves with `{err: reason}`. Handler not invoked.
+///   - edit:       proceed with new arguments. Subsequent stages and the handler see the edit.
+///   - synthesize: short-circuit; the call resolves with the given ToolResult. Handler not invoked.
+pub const Decision = union(enum) {
+    run: void,
+    deny: []const u8,
+    edit: std.json.Value,
+    synthesize: luv.ToolResult,
+};
+
+pub const StageFn = *const fn (
+    call: luv.ToolCall,
+    ctx: ?*anyopaque,
+    alloc: std.mem.Allocator,
+) anyerror!Decision;
+
+/// A pre-handler gate on a tool call. Stages run in array order before the
+/// tool's handler. `kind` and `description` are sidecar metadata so the
+/// agent can advertise stage info to the LLM via the tool's wire description.
+pub const Stage = struct {
+    kind: []const u8,
+    description: []const u8 = "",
+    decide: StageFn,
+    decide_ctx: ?*anyopaque = null,
+};
+
 /// A luv.Tool plus the handler+context the agent loop will call when the
 /// model requests this tool. Inline rather than wrapping luv.Tool so the test
 /// surface stays flat.
@@ -49,16 +77,50 @@ pub const AgentTool = struct {
     input_schema: std.json.Value,
     handler: ToolHandler,
     handler_ctx: ?*anyopaque = null,
+    /// Pre-handler stages run in order before `handler`. Empty by default.
+    stages: []const Stage = &.{},
 
-    /// Project the wire-side luv.Tool view (drops handler/ctx).
-    pub fn toLuv(self: AgentTool) luv.Tool {
+    /// Project the wire-side luv.Tool view (drops handler/ctx). Stage
+    /// descriptions are woven into the `description` field so the model
+    /// sees what gates the tool before calling it. If no stage carries a
+    /// description, the original `description` is returned unchanged
+    /// (no allocation).
+    pub fn toLuv(self: AgentTool, alloc: std.mem.Allocator) !luv.Tool {
         return .{
             .name = self.name,
-            .description = self.description,
+            .description = try describeWithStages(self.description, self.stages, alloc),
             .input_schema = self.input_schema,
         };
     }
 };
+
+/// Weave stage descriptions into a tool description for the LLM's view.
+/// Stages with empty descriptions are skipped. If nothing to weave, the
+/// original description string is returned (borrowed; no allocation).
+pub fn describeWithStages(
+    description: []const u8,
+    stages: []const Stage,
+    alloc: std.mem.Allocator,
+) ![]const u8 {
+    var meaningful: usize = 0;
+    for (stages) |s| {
+        if (s.description.len > 0) meaningful += 1;
+    }
+    if (meaningful == 0) return description;
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    try out.appendSlice(alloc, description);
+    try out.appendSlice(alloc, "\n\nThis tool runs through the following stages before execution:");
+    for (stages) |s| {
+        if (s.description.len == 0) continue;
+        try out.appendSlice(alloc, "\n- ");
+        try out.appendSlice(alloc, s.kind);
+        try out.appendSlice(alloc, ": ");
+        try out.appendSlice(alloc, s.description);
+    }
+    return try out.toOwnedSlice(alloc);
+}
 
 pub const AgentOptions = struct {
     provider: Provider,
@@ -93,7 +155,7 @@ pub fn runAgent(opts: AgentOptions, alloc: std.mem.Allocator) !AgentResult {
     // Project the AgentTool[] to the luv.Tool[] the provider sees on the wire.
     const wire_tools = try alloc.alloc(luv.Tool, opts.tools.len);
     defer alloc.free(wire_tools);
-    for (opts.tools, 0..) |t, i| wire_tools[i] = t.toLuv();
+    for (opts.tools, 0..) |t, i| wire_tools[i] = try t.toLuv(alloc);
 
     var iterations: u32 = 0;
 
@@ -165,9 +227,28 @@ fn executeToolCall(
     alloc: std.mem.Allocator,
 ) !luv.ToolResult {
     for (tools) |t| {
-        if (std.mem.eql(u8, t.name, call.name)) {
-            return t.handler(call.arguments, t.handler_ctx, alloc);
+        if (!std.mem.eql(u8, t.name, call.name)) continue;
+
+        // Run pre-handler stages in order. Each Decision either lets the
+        // call proceed (run), edits its args (edit), or short-circuits
+        // (deny / synthesize) — bypassing all later stages AND the handler.
+        var current_args = call.arguments;
+        for (t.stages) |stage| {
+            const view = luv.ToolCall{
+                .id = call.id,
+                .name = call.name,
+                .arguments = current_args,
+            };
+            const decision = try stage.decide(view, stage.decide_ctx, alloc);
+            switch (decision) {
+                .run => {},
+                .deny => |reason| return luv.ToolResult{ .err = try alloc.dupe(u8, reason) },
+                .edit => |new_args| current_args = new_args,
+                .synthesize => |result| return result,
+            }
         }
+
+        return t.handler(current_args, t.handler_ctx, alloc);
     }
     const msg = try std.fmt.allocPrint(alloc, "unknown tool: {s}", .{call.name});
     return luv.ToolResult{ .err = msg };
@@ -517,4 +598,241 @@ test "runAgent: unknown tool produces err result" {
         }
     }
     try testing.expect(found_err);
+}
+
+// ---------------------------------------------------------------------------
+// Stage tests — pre-handler decisions short-circuit / mutate calls.
+
+/// Stage fn that always denies with a fixed reason carried in ctx.
+fn alwaysDenyStage(_: luv.ToolCall, ctx: ?*anyopaque, _: std.mem.Allocator) anyerror!Decision {
+    const reason: *const []const u8 = @ptrCast(@alignCast(ctx.?));
+    return Decision{ .deny = reason.* };
+}
+
+/// Stage fn that always synthesizes a fixed ok result carried in ctx.
+fn alwaysSynthesizeStage(_: luv.ToolCall, ctx: ?*anyopaque, _: std.mem.Allocator) anyerror!Decision {
+    const content: *const []const u8 = @ptrCast(@alignCast(ctx.?));
+    return Decision{ .synthesize = .{ .ok = content.* } };
+}
+
+/// Stage fn that replaces args with the JSON Value at ctx.
+fn alwaysEditStage(_: luv.ToolCall, ctx: ?*anyopaque, _: std.mem.Allocator) anyerror!Decision {
+    const v: *const std.json.Value = @ptrCast(@alignCast(ctx.?));
+    return Decision{ .edit = v.* };
+}
+
+/// Handler that records the args it saw into ctx (a *std.json.Value box) and
+/// echoes "ran" back as the ok content. Also bumps a call counter past the
+/// pointer if ctx is a wider struct — here we use a simpler "see_args" box.
+const RecordingHandlerCtx = struct {
+    seen_args: std.json.Value,
+    call_count: u32 = 0,
+};
+
+fn recordingHandler(args: std.json.Value, ctx: ?*anyopaque, alloc: std.mem.Allocator) anyerror!luv.ToolResult {
+    _ = alloc;
+    const box: *RecordingHandlerCtx = @ptrCast(@alignCast(ctx.?));
+    box.seen_args = args;
+    box.call_count += 1;
+    return luv.ToolResult{ .ok = "ran" };
+}
+
+test "runAgent: stage with deny decision short-circuits the handler" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const empty_args = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{}", .{});
+    const calls = [_]luv.ToolCall{.{ .id = "c1", .name = "writes", .arguments = empty_args }};
+    const replies = [_]luv.Reply{
+        .{
+            .message = .{ .role = .assistant, .text = "", .tool_calls = &calls },
+            .stop_reason = .tool_use,
+        },
+        .{ .message = .{ .role = .assistant, .text = "ok" }, .stop_reason = .end_turn },
+    };
+    const start = [_]luv.Message{.{ .role = .user, .text = "do it" }};
+
+    var handler_ctx = RecordingHandlerCtx{ .seen_args = empty_args };
+    const reason: []const u8 = "always denied for test";
+    const stages = [_]Stage{.{
+        .kind = "test-deny",
+        .description = "denies every call",
+        .decide = alwaysDenyStage,
+        .decide_ctx = @ptrCast(@constCast(&reason)),
+    }};
+    const tools = [_]AgentTool{.{
+        .name = "writes",
+        .description = "writes files",
+        .input_schema = empty_args,
+        .handler = recordingHandler,
+        .handler_ctx = &handler_ctx,
+        .stages = &stages,
+    }};
+
+    var mock = MockProvider{ .replies = &replies };
+    const result = try runAgent(.{
+        .provider = mock.provider(),
+        .model = "x",
+        .conversation = &start,
+        .tools = &tools,
+        .max_iterations = 5,
+    }, arena);
+
+    try testing.expectEqual(AgentFinishReason.end_turn, result.reason);
+    try testing.expectEqual(@as(u32, 0), handler_ctx.call_count);
+
+    var found_deny = false;
+    for (result.conversation) |m| {
+        if (m.role != .assistant) continue;
+        for (m.tool_calls) |c| {
+            const r = c.result orelse continue;
+            switch (r) {
+                .err => |msg| if (std.mem.indexOf(u8, msg, "always denied for test") != null) {
+                    found_deny = true;
+                },
+                .ok => {},
+            }
+        }
+    }
+    try testing.expect(found_deny);
+}
+
+test "runAgent: stage with synthesize decision skips handler and returns the synthetic result" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const empty_args = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{}", .{});
+    const calls = [_]luv.ToolCall{.{ .id = "c1", .name = "writes", .arguments = empty_args }};
+    const replies = [_]luv.Reply{
+        .{
+            .message = .{ .role = .assistant, .text = "", .tool_calls = &calls },
+            .stop_reason = .tool_use,
+        },
+        .{ .message = .{ .role = .assistant, .text = "done" }, .stop_reason = .end_turn },
+    };
+    const start = [_]luv.Message{.{ .role = .user, .text = "go" }};
+
+    var handler_ctx = RecordingHandlerCtx{ .seen_args = empty_args };
+    const synthetic: []const u8 = "from cache";
+    const stages = [_]Stage{.{
+        .kind = "test-synth",
+        .description = "synthesizes a fake result",
+        .decide = alwaysSynthesizeStage,
+        .decide_ctx = @ptrCast(@constCast(&synthetic)),
+    }};
+    const tools = [_]AgentTool{.{
+        .name = "writes",
+        .description = "writes files",
+        .input_schema = empty_args,
+        .handler = recordingHandler,
+        .handler_ctx = &handler_ctx,
+        .stages = &stages,
+    }};
+
+    var mock = MockProvider{ .replies = &replies };
+    const result = try runAgent(.{
+        .provider = mock.provider(),
+        .model = "x",
+        .conversation = &start,
+        .tools = &tools,
+        .max_iterations = 5,
+    }, arena);
+
+    try testing.expectEqual(AgentFinishReason.end_turn, result.reason);
+    try testing.expectEqual(@as(u32, 0), handler_ctx.call_count);
+
+    var found_synth = false;
+    for (result.conversation) |m| {
+        if (m.role != .assistant) continue;
+        for (m.tool_calls) |c| {
+            const r = c.result orelse continue;
+            switch (r) {
+                .ok => |s| {
+                    if (std.mem.eql(u8, s, "from cache")) found_synth = true;
+                },
+                .err => {},
+            }
+        }
+    }
+    try testing.expect(found_synth);
+}
+
+test "describeWithStages: empty stages returns the description unchanged (borrowed)" {
+    const desc = "writes files";
+    const got = try describeWithStages(desc, &.{}, testing.allocator);
+    // Same pointer — no allocation when there's nothing to weave.
+    try testing.expectEqual(desc.ptr, got.ptr);
+}
+
+test "describeWithStages: stages with no description are skipped (still borrowed)" {
+    const desc = "writes files";
+    const stages = [_]Stage{
+        .{ .kind = "noisy", .description = "", .decide = alwaysDenyStage },
+    };
+    const got = try describeWithStages(desc, &stages, testing.allocator);
+    try testing.expectEqual(desc.ptr, got.ptr);
+}
+
+test "describeWithStages: weaves stage descriptions into the output" {
+    const desc = "writes files";
+    const stages = [_]Stage{
+        .{ .kind = "jail", .description = "paths restricted to project root", .decide = alwaysDenyStage },
+        .{ .kind = "approval", .description = "requires user approval", .decide = alwaysDenyStage },
+    };
+    const got = try describeWithStages(desc, &stages, testing.allocator);
+    defer testing.allocator.free(got);
+
+    try testing.expect(std.mem.startsWith(u8, got, "writes files\n\nThis tool runs through"));
+    try testing.expect(std.mem.indexOf(u8, got, "- jail: paths restricted to project root") != null);
+    try testing.expect(std.mem.indexOf(u8, got, "- approval: requires user approval") != null);
+}
+
+test "runAgent: stage with edit decision rewrites args before the handler runs" {
+    var arena_state = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const original_args = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"x\":1}", .{});
+    const edited_args = try std.json.parseFromSliceLeaky(std.json.Value, arena, "{\"x\":99}", .{});
+
+    const calls = [_]luv.ToolCall{.{ .id = "c1", .name = "writes", .arguments = original_args }};
+    const replies = [_]luv.Reply{
+        .{
+            .message = .{ .role = .assistant, .text = "", .tool_calls = &calls },
+            .stop_reason = .tool_use,
+        },
+        .{ .message = .{ .role = .assistant, .text = "ok" }, .stop_reason = .end_turn },
+    };
+    const start = [_]luv.Message{.{ .role = .user, .text = "edit it" }};
+
+    var handler_ctx = RecordingHandlerCtx{ .seen_args = original_args };
+    const stages = [_]Stage{.{
+        .kind = "test-edit",
+        .description = "rewrites args",
+        .decide = alwaysEditStage,
+        .decide_ctx = @ptrCast(@constCast(&edited_args)),
+    }};
+    const tools = [_]AgentTool{.{
+        .name = "writes",
+        .description = "writes files",
+        .input_schema = original_args,
+        .handler = recordingHandler,
+        .handler_ctx = &handler_ctx,
+        .stages = &stages,
+    }};
+
+    var mock = MockProvider{ .replies = &replies };
+    _ = try runAgent(.{
+        .provider = mock.provider(),
+        .model = "x",
+        .conversation = &start,
+        .tools = &tools,
+        .max_iterations = 5,
+    }, arena);
+
+    try testing.expectEqual(@as(u32, 1), handler_ctx.call_count);
+    // The handler should have seen the edited args, not the original.
+    try testing.expectEqual(@as(i64, 99), handler_ctx.seen_args.object.get("x").?.integer);
 }

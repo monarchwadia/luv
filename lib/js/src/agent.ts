@@ -10,12 +10,43 @@ import type {
   AgentOptions,
   AgentResult,
   Conversation,
+  Decision,
   Message,
   Provider,
+  Stage,
   Tool,
   ToolCall,
+  ToolContext,
   ToolResult,
 } from "./types.ts";
+
+/**
+ * Weave stage descriptions into a tool description for the LLM's view.
+ * Stages with no description are skipped. If nothing to weave, returns
+ * the original string.
+ */
+export function describeWithStages(
+  description: string,
+  stages: readonly Stage[] | undefined,
+): string {
+  if (!stages) return description;
+  const meaningful = stages.filter((s) => s.description && s.description.length > 0);
+  if (meaningful.length === 0) return description;
+  let out = description + "\n\nThis tool runs through the following stages before execution:";
+  for (const s of meaningful) out += `\n- ${s.kind}: ${s.description}`;
+  return out;
+}
+
+/** Project tools to their wire-side view: handler + stages dropped,
+ *  description enriched with stage metadata. */
+function projectTools(tools: readonly Tool[]): readonly Tool[] {
+  return tools.map((t) => ({
+    name: t.name,
+    description: describeWithStages(t.description, t.stages),
+    inputSchema: t.inputSchema,
+    handler: t.handler, // kept for type compatibility; provider doesn't read it
+  }));
+}
 
 export interface AgentStepOptions {
   readonly provider: Provider;
@@ -76,7 +107,7 @@ export async function agentStep(opts: AgentStepOptions): Promise<AgentStepResult
     reply = await opts.provider.send({
       model: opts.model,
       conversation: opts.conversation,
-      tools,
+      tools: projectTools(tools),
       ...(opts.maxTokens !== undefined && { maxTokens: opts.maxTokens }),
       ...(opts.temperature !== undefined && { temperature: opts.temperature }),
       ...(opts.signal && { signal: opts.signal }),
@@ -132,12 +163,34 @@ async function executeToolCalls(
       if (!tool) {
         result = { ok: false, error: `unknown tool: ${call.name}` };
       } else {
-        try {
-          result = await tool.handler(call.arguments, {
-            ...(signal && { signal }),
-          });
-        } catch (err) {
-          result = { ok: false, error: err instanceof Error ? err.message : String(err) };
+        const ctx: ToolContext = signal ? { signal } : {};
+        let currentArgs = call.arguments;
+        let shortCircuit: ToolResult | undefined;
+
+        // Run pre-handler stages in order.
+        for (const stage of tool.stages ?? []) {
+          const view: ToolCall = { id: call.id, name: call.name, arguments: currentArgs };
+          let decision: Decision;
+          try {
+            decision = await stage.fn(view, ctx);
+          } catch (err) {
+            shortCircuit = { ok: false, error: err instanceof Error ? err.message : String(err) };
+            break;
+          }
+          if (decision.kind === "run") continue;
+          if (decision.kind === "edit") { currentArgs = decision.args; continue; }
+          if (decision.kind === "deny") { shortCircuit = { ok: false, error: decision.error }; break; }
+          if (decision.kind === "synthesize") { shortCircuit = decision.result; break; }
+        }
+
+        if (shortCircuit !== undefined) {
+          result = shortCircuit;
+        } else {
+          try {
+            result = await tool.handler(currentArgs, ctx);
+          } catch (err) {
+            result = { ok: false, error: err instanceof Error ? err.message : String(err) };
+          }
         }
       }
       return { call, result };
@@ -190,7 +243,7 @@ export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
       reply = await opts.provider.send({
         model: opts.model,
         conversation,
-        tools,
+        tools: projectTools(tools),
         ...(opts.maxTokens !== undefined && { maxTokens: opts.maxTokens }),
         ...(opts.temperature !== undefined && { temperature: opts.temperature }),
         ...(opts.signal && { signal: opts.signal }),
