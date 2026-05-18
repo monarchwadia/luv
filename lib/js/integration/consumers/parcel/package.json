@@ -1,0 +1,13 @@
+{
+  "name": "consumer-parcel",
+  "private": true,
+  "scripts": {
+    "build": "parcel build src/index.html --dist-dir dist --no-cache"
+  },
+  "dependencies": {
+    "luv-js": "file:../../.pack/luv-js-0.1.0.tgz"
+  },
+  "devDependencies": {
+    "parcel": "2.12.0"
+  }
+}

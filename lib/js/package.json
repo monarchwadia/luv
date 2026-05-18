@@ -23,10 +23,12 @@
     "dist"
   ],
   "scripts": {
-    "build:bundle": "bun build src/index.ts src/middleware/index.ts src/mcp/index.ts --outdir=dist --target=browser --format=esm --root=src --external node:*",
+    "build:js": "esbuild src/index.ts src/middleware/index.ts src/mcp/index.ts --bundle --splitting --format=esm --outdir=dist --outbase=src --target=chrome90,edge90,firefox88,safari14.1,ios14.5,node18 --packages=external --external:node:*",
     "build:types": "tsc -p tsconfig.build.json",
-    "build": "bun run build:bundle && bun run build:types",
+    "build": "bun run build:js && bun run build:types",
     "test": "bun test",
+    "test:matrix": "bun integration/run.ts",
+    "test:matrix:all": "bun integration/run.ts --all",
     "example:server": "bun run build && bun --env-file=../../.env run examples/server.ts",
     "example:agent": "bun --env-file=../../.env run examples/agent.ts",
     "example:manual-loop": "bun --env-file=../../.env run examples/manual_loop.ts",
@@ -34,12 +36,15 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@types/bun": "1.0.0",
+    "@types/bun": "1.3.13",
+    "esbuild": "0.28.0",
     "eslint": "10.4.0",
+    "playwright": "1.59.1",
     "typescript": "6.0.3"
   },
   "engines": {
-    "bun": ">=1.0.0"
+    "bun": ">=1.0.0",
+    "node": ">=18"
   },
   "private": true
 }

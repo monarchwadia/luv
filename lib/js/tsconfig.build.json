@@ -8,6 +8,11 @@
     "rootDir": "./src",
     "ignoreDeprecations": "6.0"
   },
-  "include": ["src/**/*"],
-  "exclude": ["test", "scripts", "examples"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "test",
+    "examples"
+  ]
 }
