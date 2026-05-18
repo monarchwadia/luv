@@ -649,13 +649,15 @@ export fn agent_poll(handle: usize, out_ptr_out: usize, out_len_out: usize) i32 
             return 0;
         },
         .done => |res| {
+            // Frame: u8 tag(2); u8 reason; u32 iterations; conv wire.
+            // reason/iters first so the host can split (conv wire is the rest).
             const wmsgs = luvToWireMessages(res.conversation, a) catch return -1;
             const conv_bytes = codec.encodeConversation(wmsgs, a) catch return -1;
-            const out = allocator.alloc(u8, 1 + conv_bytes.len + 1 + 4) catch return -1;
+            const out = allocator.alloc(u8, 1 + 1 + 4 + conv_bytes.len) catch return -1;
             out[0] = 2;
-            @memcpy(out[1 .. 1 + conv_bytes.len], conv_bytes);
-            out[1 + conv_bytes.len] = @intFromEnum(res.reason);
-            std.mem.writeInt(u32, out[1 + conv_bytes.len + 1 ..][0..4], res.iterations, .little);
+            out[1] = @intFromEnum(res.reason);
+            std.mem.writeInt(u32, out[2..6], res.iterations, .little);
+            @memcpy(out[6..], conv_bytes);
             writeOutPtrLen(out_ptr_out, out_len_out, @intFromPtr(out.ptr), @intCast(out.len));
             return 0;
         },
@@ -705,7 +707,9 @@ export fn agent_feed_tools(handle: usize, in_ptr: usize, in_len: usize) i32 {
         const clen = std.mem.readInt(u32, bytes[pos..][0..4], .little);
         pos += 4;
         if (pos + clen > bytes.len) return -2;
-        const content = bytes[pos .. pos + clen];
+        // Dupe into the handle arena — the host frees its input buffer right
+        // after this returns; the machine holds the result past that.
+        const content = a.dupe(u8, bytes[pos .. pos + clen]) catch return -1;
         pos += clen;
         results[i] = if (ok) .{ .ok = content } else .{ .err = content };
     }
@@ -1138,8 +1142,8 @@ test "agent_start/poll/feed_reply: single turn -> done end_turn" {
     {
         const out: []const u8 = @as([*]const u8, @ptrFromInt(op))[0..ol];
         try testing.expectEqual(@as(u8, 2), out[0]);
-        try testing.expectEqual(@as(u8, 0), out[out.len - 5]); // reason = end_turn
-        try testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, out[out.len - 4 ..][0..4], .little));
+        try testing.expectEqual(@as(u8, 0), out[1]); // reason = end_turn
+        try testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, out[2..6], .little));
         luv_free(op, ol);
     }
 }

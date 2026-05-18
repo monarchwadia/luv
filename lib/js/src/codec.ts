@@ -190,6 +190,28 @@ export function decodeReply(bytes: Uint8Array): CodecReply {
   return { role, stopReason, text, toolCalls, usage };
 }
 
+/** Decode a bare WireToolCall block (the agent_poll tag-1 payload):
+ *  u32 count; per call: id,name,args (u32-len+bytes); u8 result_present;
+ *  if 1: u8 ok; content (u32-len+bytes). */
+export function decodeToolCalls(bytes: Uint8Array): CodecToolCall[] {
+  const r = new Reader(bytes);
+  const rstr = (): string => utf8d.decode(r.slice(r.u32()));
+  const count = r.u32();
+  const calls: CodecToolCall[] = [];
+  for (let i = 0; i < count; i++) {
+    const id = rstr();
+    const name = rstr();
+    const args = rstr();
+    let result: CodecToolResult | null = null;
+    if (r.u8() !== 0) {
+      const ok = r.u8() !== 0;
+      result = { ok, content: rstr() };
+    }
+    calls.push({ id, name, args, result });
+  }
+  return calls;
+}
+
 /** Inverse of decodeReply — encodes a Reply to feed the agent machine
  *  (mirrors core/src/wasm_abi/codec.zig decodeReply's wire). */
 export function encodeReply(reply: CodecReply): Uint8Array {

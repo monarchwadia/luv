@@ -19,6 +19,22 @@ import type {
   ToolContext,
   ToolResult,
 } from "./types.ts";
+import {
+  encodeSendRequest,
+  encodeReply,
+  decodeConversation,
+  decodeToolCalls,
+  type CodecMessage,
+  type CodecToolCall,
+} from "./codec.ts";
+import {
+  agentStart,
+  agentPoll,
+  agentFeedReply,
+  agentFeedTools,
+  agentAbort,
+  agentDestroy,
+} from "./wasm/sync.ts";
 
 /**
  * Weave stage descriptions into a tool description for the LLM's view.
@@ -224,63 +240,247 @@ async function executeToolCalls(
  * });
  * console.log(result.reason, result.iterations);
  */
-export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
-  const maxIterations = opts.maxIterations ?? 10;
-  const tools = opts.tools ?? [];
-  let conversation: Message[] = [...opts.conversation];
-  let iterations = 0;
+// --- ergonomic <-> codec mapping (the agent loop is single-sourced in Zig;
+// agent.ts is the host driver: it performs provider.send + executeToolCalls
+// effects and derives the lifecycle hooks from the effect stream). ----------
 
-  while (true) {
-    iterations++;
+const ROLE_N: Record<"system" | "user" | "assistant", number> = {
+  system: 0,
+  user: 1,
+  assistant: 2,
+};
+const STOP_N: Record<string, number> = {
+  end_turn: 0,
+  max_tokens: 1,
+  content_filter: 2,
+  stop_sequence: 3,
+  tool_use: 4,
+  other: 5,
+};
+const FINISH: readonly AgentFinishReason[] = [
+  "end_turn",
+  "max_iterations",
+  "aborted",
+  "error",
+];
 
-    if (opts.signal?.aborted) return done("aborted");
-    if (iterations > maxIterations) return done("max_iterations");
+function toCodecMsgs(conv: readonly Message[]): CodecMessage[] {
+  return conv.map((m) => ({
+    role: ROLE_N[m.role],
+    text: m.text,
+    toolCalls:
+      m.role === "assistant" && m.toolCalls
+        ? m.toolCalls.map(
+            (c): CodecToolCall => ({
+              id: c.id,
+              name: c.name,
+              args: JSON.stringify(c.arguments),
+              result:
+                c.result === undefined
+                  ? null
+                  : c.result.ok
+                    ? { ok: true, content: c.result.content }
+                    : { ok: false, content: c.result.error },
+            }),
+          )
+        : [],
+  }));
+}
 
-    opts.onTurnStart?.(iterations);
-
-    let reply;
-    try {
-      reply = await opts.provider.send({
-        model: opts.model,
-        conversation,
-        tools: projectTools(tools),
-        ...(opts.maxTokens !== undefined && { maxTokens: opts.maxTokens }),
-        ...(opts.temperature !== undefined && { temperature: opts.temperature }),
-        ...(opts.signal && { signal: opts.signal }),
-      });
-    } catch (err) {
-      return done("error", err instanceof Error ? err : new Error(String(err)));
+function fromCodecMsgs(msgs: CodecMessage[]): Message[] {
+  const NAME = ["system", "user", "assistant"] as const;
+  return msgs.map((m): Message => {
+    const role = NAME[m.role] ?? "user";
+    if (role === "assistant") {
+      if (m.toolCalls.length === 0) return { role, text: m.text };
+      return {
+        role,
+        text: m.text,
+        toolCalls: m.toolCalls.map((c) => {
+          const base: ToolCall = {
+            id: c.id,
+            name: c.name,
+            arguments: JSON.parse(c.args) as unknown,
+          };
+          if (c.result === null) return base;
+          return {
+            ...base,
+            result: c.result.ok
+              ? { ok: true, content: c.result.content }
+              : { ok: false, error: c.result.content },
+          };
+        }),
+      };
     }
+    return { role, text: m.text };
+  });
+}
 
-    if (opts.signal?.aborted) return done("aborted");
+function withFlag(b: Uint8Array, flag: number): Uint8Array {
+  const o = new Uint8Array(b.length + 1);
+  o.set(b);
+  o[b.length] = flag;
+  return o;
+}
 
-    const callsRequested =
-      reply.message.role === "assistant" ? reply.message.toolCalls ?? [] : [];
-
-    if (reply.message.role !== "assistant" || callsRequested.length === 0) {
-      conversation = [...conversation, reply.message];
-      return done("end_turn");
-    }
-
-    // Execute all tool calls in parallel, with hooks.
-    for (const c of callsRequested) opts.onToolCall?.(c);
-    const results = await executeToolCalls(callsRequested, tools, opts.signal);
-    for (const { call, result } of results) opts.onToolResult?.(call, result);
-
-    // Colocate results onto the assistant message's toolCalls — no
-    // separate `.tool` follow-up message.
-    const resolvedCalls: ToolCall[] = callsRequested.map((c) => {
-      const r = results.find((x) => x.call.id === c.id)!;
-      return { ...c, result: r.result };
-    });
-    conversation = [
-      ...conversation,
-      { role: "assistant", text: reply.message.text, toolCalls: resolvedCalls },
-    ];
+function encodeToolResults(
+  results: ReadonlyArray<{ result: ToolResult }>,
+): Uint8Array {
+  const enc = new TextEncoder();
+  const blobs = results.map(({ result }) =>
+    enc.encode(result.ok ? result.content : result.error),
+  );
+  let size = 4;
+  for (const b of blobs) size += 1 + 4 + b.length;
+  const out = new Uint8Array(size);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, results.length, true);
+  let pos = 4;
+  for (let i = 0; i < results.length; i++) {
+    out[pos] = results[i]!.result.ok ? 1 : 0;
+    pos += 1;
+    dv.setUint32(pos, blobs[i]!.length, true);
+    pos += 4;
+    out.set(blobs[i]!, pos);
+    pos += blobs[i]!.length;
   }
+  return out;
+}
 
-  function done(reason: AgentFinishReason, error?: Error): AgentResult {
-    opts.onFinish?.(reason);
-    return { conversation, reason, iterations, ...(error && { error }) };
+export async function runAgent(opts: AgentOptions): Promise<AgentResult> {
+  const tools = opts.tools ?? [];
+  const wireTools = projectTools(tools);
+  const maxIterations = opts.maxIterations ?? 10;
+
+  const sr = encodeSendRequest({
+    model: opts.model,
+    messages: toCodecMsgs(opts.conversation),
+    maxTokens: opts.maxTokens ?? null,
+    temperature: opts.temperature ?? null,
+    stream: false,
+    tools: wireTools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: JSON.stringify(t.inputSchema),
+    })),
+  });
+  const startBuf = new Uint8Array(4 + sr.length + 4);
+  const sdv = new DataView(startBuf.buffer);
+  sdv.setUint32(0, sr.length, true);
+  startBuf.set(sr, 4);
+  sdv.setUint32(4 + sr.length, maxIterations, true);
+
+  const handle = agentStart(startBuf);
+  let iterations = 0;
+  let providerError: Error | undefined;
+  try {
+    while (true) {
+      if (opts.signal?.aborted) agentAbort(handle);
+      const frame = agentPoll(handle);
+      const tag = frame[0];
+      const payload = frame.subarray(1);
+      const pdv = new DataView(
+        payload.buffer,
+        payload.byteOffset,
+        payload.byteLength,
+      );
+
+      if (tag === 2) {
+        const reason = FINISH[payload[0]!] ?? "error";
+        const iters = pdv.getUint32(1, true);
+        const conversation = fromCodecMsgs(
+          decodeConversation(payload.subarray(5)),
+        );
+        opts.onFinish?.(reason);
+        return {
+          conversation,
+          reason,
+          iterations: iters,
+          ...(reason === "error" && providerError && { error: providerError }),
+        };
+      }
+
+      if (tag === 0) {
+        const conversation = fromCodecMsgs(decodeConversation(payload));
+        iterations++;
+        opts.onTurnStart?.(iterations);
+        let reply;
+        try {
+          reply = await opts.provider.send({
+            model: opts.model,
+            conversation,
+            tools: wireTools,
+            ...(opts.maxTokens !== undefined && { maxTokens: opts.maxTokens }),
+            ...(opts.temperature !== undefined && {
+              temperature: opts.temperature,
+            }),
+            ...(opts.signal && { signal: opts.signal }),
+          });
+        } catch (err) {
+          providerError = err instanceof Error ? err : new Error(String(err));
+          agentFeedReply(
+            handle,
+            withFlag(
+              encodeReply({
+                role: 2,
+                stopReason: 0,
+                text: "",
+                toolCalls: [],
+                usage: null,
+              }),
+              1,
+            ),
+          );
+          continue;
+        }
+        if (opts.signal?.aborted) {
+          agentAbort(handle);
+          continue;
+        }
+        const cr = {
+          role: ROLE_N[reply.message.role],
+          stopReason: STOP_N[reply.stopReason] ?? 5,
+          text: reply.message.text,
+          toolCalls:
+            reply.message.role === "assistant" && reply.message.toolCalls
+              ? reply.message.toolCalls.map(
+                  (c): CodecToolCall => ({
+                    id: c.id,
+                    name: c.name,
+                    args: JSON.stringify(c.arguments),
+                    result:
+                      c.result === undefined
+                        ? null
+                        : c.result.ok
+                          ? { ok: true, content: c.result.content }
+                          : { ok: false, content: c.result.error },
+                  }),
+                )
+              : [],
+          usage: reply.usage
+            ? {
+                prompt: reply.usage.promptTokens,
+                completion: reply.usage.completionTokens,
+                total: reply.usage.totalTokens,
+              }
+            : null,
+        };
+        agentFeedReply(handle, withFlag(encodeReply(cr), 0));
+        continue;
+      }
+
+      // tag === 1: tool_calls
+      const calls: ToolCall[] = decodeToolCalls(payload).map((c) => ({
+        id: c.id,
+        name: c.name,
+        arguments: JSON.parse(c.args) as unknown,
+      }));
+      for (const c of calls) opts.onToolCall?.(c);
+      const results = await executeToolCalls(calls, tools, opts.signal);
+      for (const { call, result } of results) opts.onToolResult?.(call, result);
+      agentFeedTools(handle, encodeToolResults(results));
+    }
+  } finally {
+    agentDestroy(handle);
   }
 }
