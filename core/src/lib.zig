@@ -18,6 +18,7 @@ pub const agent = @import("agent/agent.zig");
 // references them directly.
 comptime {
     _ = wasm_exports;
+    _ = wasm_effect;
 }
 
 const greeting = "Hello World!";

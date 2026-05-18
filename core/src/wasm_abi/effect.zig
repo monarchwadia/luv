@@ -105,9 +105,120 @@ pub const EchoMachine = struct {
 };
 
 // ---------------------------------------------------------------------------
+// Wire serialization for the ABI boundary (little-endian, length-prefixed).
+//
+// Poll:  u8 tag (0=effects, 1=done)
+//   effects: u32 count; per effect: u8 kind, u32 payload_len, payload
+//   done:    u32 len, bytes
+// Feed:  u32 count; per result: u32 len, bytes
+
+pub fn serializePoll(p: Poll, alloc: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
+    switch (p) {
+        .effects => |effs| {
+            var total: usize = 1 + 4;
+            for (effs) |e| total += 1 + 4 + e.payload.len;
+            const out = try alloc.alloc(u8, total);
+            out[0] = 0;
+            std.mem.writeInt(u32, out[1..5], @intCast(effs.len), .little);
+            var pos: usize = 5;
+            for (effs) |e| {
+                out[pos] = @intFromEnum(e.kind);
+                std.mem.writeInt(u32, out[pos + 1 ..][0..4], @intCast(e.payload.len), .little);
+                @memcpy(out[pos + 5 .. pos + 5 + e.payload.len], e.payload);
+                pos += 5 + e.payload.len;
+            }
+            return out;
+        },
+        .done => |d| {
+            const out = try alloc.alloc(u8, 1 + 4 + d.len);
+            out[0] = 1;
+            std.mem.writeInt(u32, out[1..5], @intCast(d.len), .little);
+            @memcpy(out[5..], d);
+            return out;
+        },
+    }
+}
+
+fn parseFeed(bytes: []const u8, alloc: std.mem.Allocator) MachineError![][]const u8 {
+    if (bytes.len < 4) return error.BatchMismatch;
+    const count = std.mem.readInt(u32, bytes[0..4], .little);
+    const results = try alloc.alloc([]const u8, count);
+    errdefer alloc.free(results);
+    var pos: usize = 4;
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        if (pos + 4 > bytes.len) return error.BatchMismatch;
+        const len = std.mem.readInt(u32, bytes[pos..][0..4], .little);
+        pos += 4;
+        if (pos + len > bytes.len) return error.BatchMismatch;
+        results[i] = bytes[pos .. pos + len];
+        pos += len;
+    }
+    return results;
+}
+
+// ---------------------------------------------------------------------------
+// Freestanding wasm exports (echo machine — Stream C2 round-trip target).
+// Reuses exports.zig's luv_alloc/luv_free for input/output buffers.
+
+const builtin = @import("builtin");
+const eff_alloc: std.mem.Allocator = if (builtin.target.cpu.arch.isWasm())
+    std.heap.wasm_allocator
+else
+    std.heap.page_allocator;
+
+export fn luv_echo_start(in_ptr: usize, in_len: usize) usize {
+    const input: []const u8 = if (in_len == 0)
+        &.{}
+    else
+        @as([*]const u8, @ptrFromInt(in_ptr))[0..in_len];
+    const m = eff_alloc.create(EchoMachine) catch return 0;
+    m.* = EchoMachine.init(eff_alloc, input) catch {
+        eff_alloc.destroy(m);
+        return 0;
+    };
+    return @intFromPtr(m);
+}
+
+export fn luv_echo_poll(handle: usize, out_ptr_out: usize, out_len_out: usize) i32 {
+    const m: *EchoMachine = @ptrFromInt(handle);
+    const p = m.poll() catch return -1;
+    const buf = serializePoll(p, eff_alloc) catch return -1;
+    const pp: *usize = @ptrFromInt(out_ptr_out);
+    const lp: *usize = @ptrFromInt(out_len_out);
+    pp.* = @intFromPtr(buf.ptr);
+    lp.* = buf.len;
+    return 0;
+}
+
+export fn luv_echo_feed(handle: usize, res_ptr: usize, res_len: usize) i32 {
+    const m: *EchoMachine = @ptrFromInt(handle);
+    const bytes: []const u8 = if (res_len == 0)
+        &.{}
+    else
+        @as([*]const u8, @ptrFromInt(res_ptr))[0..res_len];
+    const results = parseFeed(bytes, eff_alloc) catch return -1;
+    defer eff_alloc.free(results);
+    m.feed(results) catch return -2;
+    return 0;
+}
+
+export fn luv_echo_destroy(handle: usize) void {
+    const m: *EchoMachine = @ptrFromInt(handle);
+    m.deinit();
+    eff_alloc.destroy(m);
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 
 const testing = std.testing;
+
+test "serializePoll: done frame" {
+    const bytes = try serializePoll(.{ .done = "hi" }, testing.allocator);
+    defer testing.allocator.free(bytes);
+    try testing.expectEqualSlices(u8, &.{ 0x01, 0x02, 0x00, 0x00, 0x00, 'h', 'i' }, bytes);
+}
 
 test "EchoMachine: batched poll -> feed -> done round-trips" {
     var m = try EchoMachine.init(testing.allocator, "abcd");
