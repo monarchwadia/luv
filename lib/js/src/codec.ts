@@ -29,12 +29,20 @@ export interface CodecMessage {
   readonly toolCalls: readonly CodecToolCall[];
 }
 
+export interface CodecTool {
+  readonly name: string;
+  readonly description: string;
+  /** Opaque JSON Schema text — the codec never parses it. */
+  readonly inputSchema: string;
+}
+
 export interface CodecSendRequest {
   readonly model: string;
   readonly messages: readonly CodecMessage[];
   readonly maxTokens: number | null;
   readonly temperature: number | null;
   readonly stream: boolean;
+  readonly tools?: readonly CodecTool[];
 }
 
 export interface CodecReply {
@@ -134,6 +142,14 @@ export function encodeSendRequest(req: CodecSendRequest): Uint8Array {
     w.f32(req.temperature);
   }
   w.u8(req.stream ? 1 : 0);
+
+  const tools = req.tools ?? [];
+  w.u32(tools.length);
+  for (const t of tools) {
+    str(t.name);
+    str(t.description);
+    str(t.inputSchema);
+  }
   return w.out();
 }
 

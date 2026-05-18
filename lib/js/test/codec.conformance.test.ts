@@ -36,6 +36,7 @@ const corpus = JSON.parse(
       maxTokens: number | null;
       temperature: number | null;
       stream: boolean;
+      tools?: { name: string; description: string; inputSchema: string }[];
     };
   }[];
 };

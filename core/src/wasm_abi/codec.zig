@@ -64,6 +64,14 @@ pub const WireMessage = struct {
     tool_calls: []const WireToolCall = &.{},
 };
 
+pub const WireTool = struct {
+    name: []const u8,
+    description: []const u8,
+    /// Opaque JSON Schema bytes — codec never parses (parsed at the
+    /// morphism boundary, same as tool-call args).
+    input_schema: []const u8,
+};
+
 pub const SendRequestInput = struct {
     arena: std.heap.ArenaAllocator,
     model: []const u8,
@@ -71,6 +79,7 @@ pub const SendRequestInput = struct {
     max_tokens: ?u32,
     temperature: ?f32,
     stream: bool,
+    tools: []const WireTool = &.{},
 
     /// All decoded memory is arena-owned; the alloc param is ignored (kept
     /// for call-site compatibility). Single free, leak-safe on every path.
@@ -203,6 +212,19 @@ pub fn decodeSendRequest(bytes: []const u8, alloc: std.mem.Allocator) DecodeErro
 
     const stream_byte = try r.readU8();
 
+    const tool_count = try r.readU32();
+    const tools = try a.alloc(WireTool, tool_count);
+    var ti: usize = 0;
+    while (ti < tool_count) : (ti += 1) {
+        const name_len = try r.readU32();
+        const name = try r.readSliceDup(name_len, a);
+        const desc_len = try r.readU32();
+        const description = try r.readSliceDup(desc_len, a);
+        const schema_len = try r.readU32();
+        const input_schema = try r.readSliceDup(schema_len, a);
+        tools[ti] = .{ .name = name, .description = description, .input_schema = input_schema };
+    }
+
     return .{
         .arena = arena,
         .model = model,
@@ -210,6 +232,7 @@ pub fn decodeSendRequest(bytes: []const u8, alloc: std.mem.Allocator) DecodeErro
         .max_tokens = max_tokens,
         .temperature = temperature,
         .stream = stream_byte != 0,
+        .tools = tools,
     };
 }
 
@@ -231,6 +254,8 @@ pub fn encodeSendRequest(req: SendRequestInput, alloc: std.mem.Allocator) std.me
     total += 1 + (if (req.max_tokens != null) @as(usize, 4) else 0);
     total += 1 + (if (req.temperature != null) @as(usize, 4) else 0);
     total += 1;
+    total += 4;
+    for (req.tools) |t| total += 4 + t.name.len + 4 + t.description.len + 4 + t.input_schema.len;
 
     const out = try alloc.alloc(u8, total);
     errdefer alloc.free(out);
@@ -308,6 +333,17 @@ pub fn encodeSendRequest(req: SendRequestInput, alloc: std.mem.Allocator) std.me
     out[pos] = if (req.stream) 1 else 0;
     pos += 1;
 
+    std.mem.writeInt(u32, out[pos..][0..4], @intCast(req.tools.len), .little);
+    pos += 4;
+    for (req.tools) |t| {
+        inline for (.{ t.name, t.description, t.input_schema }) |field| {
+            std.mem.writeInt(u32, out[pos..][0..4], @intCast(field.len), .little);
+            pos += 4;
+            @memcpy(out[pos .. pos + field.len], field);
+            pos += field.len;
+        }
+    }
+
     std.debug.assert(pos == total);
     return out;
 }
@@ -382,6 +418,7 @@ test "decodeSendRequest: minimal request (model + 1 user message, no opts, no st
         0x00, // max_tokens_present = 0
         0x00, // temperature_present = 0
         0x00, // stream = 0
+        0x00, 0x00, 0x00, 0x00, // tool_count = 0
     };
 
     var req = try decodeSendRequest(&bytes, testing.allocator);
@@ -412,6 +449,7 @@ test "decodeSendRequest: full request (model, multi-turn, max_tokens, temperatur
         0x01, 0x20, 0x00, 0x00, 0x00, // max_tokens_present = 1, = 32
         0x01, 0x00, 0x00, 0x00, 0x00, // temperature_present = 1, = 0.0f
         0x01, // stream = 1
+        0x00, 0x00, 0x00, 0x00, // tool_count = 0
     };
 
     var req = try decodeSendRequest(&bytes, testing.allocator);
@@ -526,6 +564,11 @@ const CorpusMsg = struct {
     text: []const u8,
     toolCalls: []const CorpusTC = &.{},
 };
+const CorpusTool = struct {
+    name: []const u8,
+    description: []const u8,
+    inputSchema: []const u8,
+};
 const CorpusSendReqCase = struct {
     name: []const u8,
     hex: []const u8,
@@ -535,6 +578,7 @@ const CorpusSendReqCase = struct {
         maxTokens: ?u32 = null,
         temperature: ?f32 = null,
         stream: bool,
+        tools: []const CorpusTool = &.{},
     },
 };
 const Corpus = struct {
@@ -626,6 +670,12 @@ test "conformance corpus matches codec implementation" {
         try testing.expectEqual(c.value.maxTokens, req.max_tokens);
         try testing.expectEqual(c.value.temperature, req.temperature);
         try testing.expectEqual(c.value.stream, req.stream);
+        try testing.expectEqual(c.value.tools.len, req.tools.len);
+        for (c.value.tools, 0..) |et, ti| {
+            try testing.expectEqualStrings(et.name, req.tools[ti].name);
+            try testing.expectEqualStrings(et.description, req.tools[ti].description);
+            try testing.expectEqualStrings(et.inputSchema, req.tools[ti].input_schema);
+        }
 
         // Round-trip: re-encoding the decoded value must reproduce the exact
         // corpus bytes — proves encode/decode are inverse and the corpus hex

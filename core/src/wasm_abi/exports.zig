@@ -106,11 +106,18 @@ fn buildWireJson(req: codec.SendRequestInput) ![]u8 {
         lmsgs[i] = .{ .role = wm.role, .text = wm.text, .tool_calls = calls };
     }
 
+    const ltools = try a.alloc(luv.Tool, req.tools.len);
+    for (req.tools, 0..) |wt, i| {
+        const schema = try std.json.parseFromSliceLeaky(std.json.Value, a, wt.input_schema, .{});
+        ltools[i] = .{ .name = wt.name, .description = wt.description, .input_schema = schema };
+    }
+
     const wire = try morphism.toOpenAI(lmsgs, .{
         .model = req.model,
         .max_tokens = req.max_tokens,
         .temperature = req.temperature,
         .stream = req.stream,
+        .tools = ltools,
     }, allocator);
     defer allocator.free(wire.messages);
 
@@ -235,7 +242,9 @@ test "luv_build_request: codec input → openai wire JSON contains user message"
     // Build codec-encoded SendRequest matching 001_single_user.
     const sample_input = [_]u8{
         0x0B, 0x00, 0x00, 0x00, // model_len = 11
-        'g', 'p', 't', '-', '4', 'o', '-', 'm', 'i', 'n', 'i',
+        'g',  'p',  't',  '-',
+        '4',  'o',  '-',  'm',
+        'i',  'n',  'i',
         0x01, 0x00, 0x00, 0x00, // message_count = 1
         0x01, // role = user
         0x02, 0x00, 0x00, 0x00, 'h', 'i', // text_len = 2, "hi"
@@ -243,6 +252,7 @@ test "luv_build_request: codec input → openai wire JSON contains user message"
         0x00, // max_tokens absent
         0x00, // temperature absent
         0x00, // stream = 0
+        0x00, 0x00, 0x00, 0x00, // tool_count = 0
     };
 
     const wire = try callBuildRequest(&sample_input, testing.allocator);
