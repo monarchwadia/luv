@@ -45,10 +45,18 @@ export interface CodecSendRequest {
   readonly tools?: readonly CodecTool[];
 }
 
+export interface CodecUsage {
+  readonly prompt: number;
+  readonly completion: number;
+  readonly total: number;
+}
+
 export interface CodecReply {
   readonly role: number;
   readonly stopReason: number; // 0..5
   readonly text: string;
+  readonly toolCalls: readonly CodecToolCall[];
+  readonly usage: CodecUsage | null;
 }
 
 export type CodecEvent =
@@ -157,9 +165,29 @@ export function decodeReply(bytes: Uint8Array): CodecReply {
   const r = new Reader(bytes);
   const role = r.u8();
   const stopReason = r.u8();
-  const len = r.u32();
-  const text = utf8d.decode(r.slice(len));
-  return { role, stopReason, text };
+  const text = utf8d.decode(r.slice(r.u32()));
+
+  const rstr = (): string => utf8d.decode(r.slice(r.u32()));
+  const tcCount = r.u32();
+  const toolCalls: CodecToolCall[] = [];
+  for (let i = 0; i < tcCount; i++) {
+    const id = rstr();
+    const name = rstr();
+    const args = rstr();
+    let result: CodecToolResult | null = null;
+    if (r.u8() !== 0) {
+      const ok = r.u8() !== 0;
+      result = { ok, content: rstr() };
+    }
+    toolCalls.push({ id, name, args, result });
+  }
+
+  const usage: CodecUsage | null =
+    r.u8() !== 0
+      ? { prompt: r.u32(), completion: r.u32(), total: r.u32() }
+      : null;
+
+  return { role, stopReason, text, toolCalls, usage };
 }
 
 export function decodeEvents(bytes: Uint8Array): CodecEvent[] {

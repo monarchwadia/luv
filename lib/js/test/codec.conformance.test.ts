@@ -16,7 +16,22 @@ const corpus = JSON.parse(
     "utf8",
   ),
 ) as {
-  encodeReply: { name: string; value: { role: number; stopReason: number; text: string }; hex: string }[];
+  encodeReply: {
+    name: string;
+    value: {
+      role: number;
+      stopReason: number;
+      text: string;
+      toolCalls: {
+        id: string;
+        name: string;
+        args: string;
+        result: { ok: boolean; content: string } | null;
+      }[];
+      usage: { prompt: number; completion: number; total: number } | null;
+    };
+    hex: string;
+  }[];
   encodeEvents: { name: string; events: CodecEvent[]; hex: string }[];
   decodeSendRequest: {
     name: string;

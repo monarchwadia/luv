@@ -89,6 +89,62 @@ pub const SendRequestInput = struct {
     }
 };
 
+/// Codec-level reply: tool-call args are opaque JSON bytes (stringified at
+/// the exports/morphism boundary, same as the request side — codec stays
+/// std.json-free).
+pub const WireReply = struct {
+    message: WireMessage,
+    stop_reason: luv.StopReason,
+    usage: ?luv.Usage = null,
+};
+
+fn toolCallsSize(calls: []const WireToolCall) usize {
+    var n: usize = 4;
+    for (calls) |c| {
+        n += 4 + c.id.len + 4 + c.name.len + 4 + c.args.len + 1;
+        if (c.result) |rr| n += 1 + 4 + (switch (rr) {
+            .ok => |s| s.len,
+            .err => |s| s.len,
+        });
+    }
+    return n;
+}
+
+fn writeToolCalls(out: []u8, pos: *usize, calls: []const WireToolCall) void {
+    std.mem.writeInt(u32, out[pos.*..][0..4], @intCast(calls.len), .little);
+    pos.* += 4;
+    for (calls) |c| {
+        inline for (.{ c.id, c.name, c.args }) |field| {
+            std.mem.writeInt(u32, out[pos.*..][0..4], @intCast(field.len), .little);
+            pos.* += 4;
+            @memcpy(out[pos.* .. pos.* + field.len], field);
+            pos.* += field.len;
+        }
+        if (c.result) |rr| {
+            out[pos.*] = 1;
+            pos.* += 1;
+            const content: []const u8 = switch (rr) {
+                .ok => |s| blk: {
+                    out[pos.*] = 1;
+                    break :blk s;
+                },
+                .err => |s| blk: {
+                    out[pos.*] = 0;
+                    break :blk s;
+                },
+            };
+            pos.* += 1;
+            std.mem.writeInt(u32, out[pos.*..][0..4], @intCast(content.len), .little);
+            pos.* += 4;
+            @memcpy(out[pos.* .. pos.* + content.len], content);
+            pos.* += content.len;
+        } else {
+            out[pos.*] = 0;
+            pos.* += 1;
+        }
+    }
+}
+
 pub const DecodeError = error{
     Truncated,
     InvalidRole,
@@ -348,14 +404,42 @@ pub fn encodeSendRequest(req: SendRequestInput, alloc: std.mem.Allocator) std.me
     return out;
 }
 
-pub fn encodeReply(reply: luv.Reply, alloc: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
-    const total = 1 + 1 + 4 + reply.message.text.len;
-    var out = try alloc.alloc(u8, total);
+pub fn encodeReply(reply: WireReply, alloc: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
+    const m = reply.message;
+    var total: usize = 1 + 1 + 4 + m.text.len;
+    total += toolCallsSize(m.tool_calls);
+    total += 1 + (if (reply.usage != null) @as(usize, 12) else 0);
+
+    const out = try alloc.alloc(u8, total);
     errdefer alloc.free(out);
-    out[0] = roleToByte(reply.message.role);
-    out[1] = stopReasonToByte(reply.stop_reason);
-    std.mem.writeInt(u32, out[2..6], @intCast(reply.message.text.len), .little);
-    @memcpy(out[6..], reply.message.text);
+    var pos: usize = 0;
+
+    out[pos] = roleToByte(m.role);
+    pos += 1;
+    out[pos] = stopReasonToByte(reply.stop_reason);
+    pos += 1;
+    std.mem.writeInt(u32, out[pos..][0..4], @intCast(m.text.len), .little);
+    pos += 4;
+    @memcpy(out[pos .. pos + m.text.len], m.text);
+    pos += m.text.len;
+
+    writeToolCalls(out, &pos, m.tool_calls);
+
+    if (reply.usage) |u| {
+        out[pos] = 1;
+        pos += 1;
+        std.mem.writeInt(u32, out[pos..][0..4], u.prompt_tokens, .little);
+        pos += 4;
+        std.mem.writeInt(u32, out[pos..][0..4], u.completion_tokens, .little);
+        pos += 4;
+        std.mem.writeInt(u32, out[pos..][0..4], u.total_tokens, .little);
+        pos += 4;
+    } else {
+        out[pos] = 0;
+        pos += 1;
+    }
+
+    std.debug.assert(pos == total);
     return out;
 }
 
@@ -472,7 +556,7 @@ test "decodeSendRequest: truncated input returns error.Truncated" {
 }
 
 test "encodeReply: shapes assistant Reply with end_turn into expected bytes" {
-    const reply: luv.Reply = .{
+    const reply: WireReply = .{
         .message = .{ .role = .assistant, .text = "Hi" },
         .stop_reason = .end_turn,
     };
@@ -484,6 +568,8 @@ test "encodeReply: shapes assistant Reply with end_turn into expected bytes" {
         0x00, // stop_reason = end_turn
         0x02, 0x00, 0x00, 0x00, // text_len = 2
         'H',  'i',
+        0x00, 0x00, 0x00, 0x00, // tool_call_count = 0
+        0x00, // usage_present = 0
     };
     try testing.expectEqualSlices(u8, &expected, bytes);
 }
@@ -536,9 +622,16 @@ fn stopReasonFromByte(b: u8) luv.StopReason {
     };
 }
 
+const CorpusUsage = struct { prompt: u32, completion: u32, total: u32 };
 const CorpusReplyCase = struct {
     name: []const u8,
-    value: struct { role: u8, stopReason: u8, text: []const u8 },
+    value: struct {
+        role: u8,
+        stopReason: u8,
+        text: []const u8,
+        toolCalls: []const CorpusTC = &.{},
+        usage: ?CorpusUsage = null,
+    },
     hex: []const u8,
 };
 const CorpusEventJson = struct {
@@ -601,9 +694,31 @@ test "conformance corpus matches codec implementation" {
     var hexbuf: [1024]u8 = undefined;
 
     for (corpus.encodeReply) |c| {
-        const reply: luv.Reply = .{
-            .message = .{ .role = try roleFromByte(c.value.role), .text = c.value.text },
+        const wcalls = try testing.allocator.alloc(WireToolCall, c.value.toolCalls.len);
+        defer testing.allocator.free(wcalls);
+        for (c.value.toolCalls, 0..) |tc, j| {
+            wcalls[j] = .{
+                .id = tc.id,
+                .name = tc.name,
+                .args = tc.args,
+                .result = if (tc.result) |rr|
+                    (if (rr.ok) WireToolResult{ .ok = rr.content } else WireToolResult{ .err = rr.content })
+                else
+                    null,
+            };
+        }
+        const usage: ?luv.Usage = if (c.value.usage) |u|
+            luv.Usage{ .prompt_tokens = u.prompt, .completion_tokens = u.completion, .total_tokens = u.total }
+        else
+            null;
+        const reply: WireReply = .{
+            .message = .{
+                .role = try roleFromByte(c.value.role),
+                .text = c.value.text,
+                .tool_calls = wcalls,
+            },
             .stop_reason = stopReasonFromByte(c.value.stopReason),
+            .usage = usage,
         };
         const got = try encodeReply(reply, testing.allocator);
         defer testing.allocator.free(got);

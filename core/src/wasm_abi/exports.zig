@@ -148,7 +148,27 @@ export fn luv_parse_reply(
     };
     defer allocator.free(reply.message.text);
 
-    const encoded = codec.encodeReply(reply, allocator) catch return -1;
+    // luv.Reply -> codec.WireReply: stringify tool-call args to opaque JSON
+    // bytes at the boundary (codec stays std.json-free).
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const wcalls = a.alloc(codec.WireToolCall, reply.message.tool_calls.len) catch return -1;
+    for (reply.message.tool_calls, 0..) |c, j| {
+        const args = std.json.Stringify.valueAlloc(a, c.arguments, .{}) catch return -1;
+        const res: ?codec.WireToolResult = if (c.result) |rr| switch (rr) {
+            .ok => |s| codec.WireToolResult{ .ok = s },
+            .err => |s| codec.WireToolResult{ .err = s },
+        } else null;
+        wcalls[j] = .{ .id = c.id, .name = c.name, .args = args, .result = res };
+    }
+    const wreply: codec.WireReply = .{
+        .message = .{ .role = reply.message.role, .text = reply.message.text, .tool_calls = wcalls },
+        .stop_reason = reply.stop_reason,
+        .usage = reply.usage,
+    };
+
+    const encoded = codec.encodeReply(wreply, allocator) catch return -1;
     writeOutPtrLen(out_ptr_out, out_len_out, @intFromPtr(encoded.ptr), @intCast(encoded.len));
     return 0;
 }
@@ -277,8 +297,10 @@ test "luv_parse_reply: 001 fixture → codec-encoded Reply with end_turn" {
     try testing.expectEqual(@as(u8, 2), encoded[0]); // role = assistant
     try testing.expectEqual(@as(u8, 0), encoded[1]); // stop_reason = end_turn
     const text_len = std.mem.readInt(u32, encoded[2..6], .little);
-    try testing.expectEqual(text_len, encoded.len - 6);
     try testing.expect(text_len > 0);
+    // Reply wire now carries trailing tool_call_count (u32) + usage block
+    // after the text; exact tail length depends on usage presence.
+    try testing.expect(encoded.len >= 6 + text_len + 4 + 1);
 }
 
 test "luv_decoder lifecycle: feed 011 fixture → events end with stop end_turn" {

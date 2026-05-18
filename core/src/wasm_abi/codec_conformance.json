@@ -3,8 +3,21 @@
   "encodeReply": [
     {
       "name": "assistant_end_turn_Hi",
-      "value": { "role": 2, "stopReason": 0, "text": "Hi" },
-      "hex": "0200020000004869"
+      "value": { "role": 2, "stopReason": 0, "text": "Hi", "toolCalls": [], "usage": null },
+      "hex": "02000200000048690000000000"
+    },
+    {
+      "name": "tool_use_with_usage",
+      "value": {
+        "role": 2,
+        "stopReason": 4,
+        "text": "",
+        "toolCalls": [
+          { "id": "c1", "name": "f", "args": "{\"x\":1}", "result": null }
+        ],
+        "usage": { "prompt": 3, "completion": 5, "total": 8 }
+      },
+      "hex": "020400000000010000000200000063310100000066070000007b2278223a317d0001030000000500000008000000"
     }
   ],
   "encodeEvents": [
