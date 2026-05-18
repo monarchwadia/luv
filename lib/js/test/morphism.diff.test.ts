@@ -117,12 +117,10 @@ const replyCases = [
   },
 ];
 
-// Known divergence (tracked, pending reconciliation): Zig openai.Response
-// requires id/object/created/model/usage; the TS port treats them optional,
-// so minimal wires fail with status -3. Flip back to test() once the Zig
-// Response envelope fields are made optional.
+// Reconciled: Zig openai.Response envelope fields made optional + usage
+// emitted only when present — matches the lenient TS port.
 for (const c of replyCases) {
-  test.failing(`fromOpenAI parity: ${c.name}`, () => {
+  test(`fromOpenAI parity: ${c.name}`, () => {
     expect(parseOpenAIReply(c.wire)).toEqual(fromOpenAI(c.wire));
   });
 }

@@ -89,24 +89,26 @@ pub const ResponseMessage = struct {
 };
 
 pub const Choice = struct {
-    index: u32,
+    index: u32 = 0,
     message: ResponseMessage,
     finish_reason: []const u8,
 };
 
 pub const Usage = struct {
-    prompt_tokens: u32,
-    completion_tokens: u32,
-    total_tokens: u32,
+    prompt_tokens: u32 = 0,
+    completion_tokens: u32 = 0,
+    total_tokens: u32 = 0,
 };
 
+// Envelope fields optional to match the lenient TS port (OpenAIWireResponse:
+// id/object/created/model/usage all optional; only choices required).
 pub const Response = struct {
-    id: []const u8,
-    object: []const u8,
-    created: i64,
-    model: []const u8,
+    id: ?[]const u8 = null,
+    object: ?[]const u8 = null,
+    created: ?i64 = null,
+    model: ?[]const u8 = null,
     choices: []const Choice,
-    usage: Usage,
+    usage: ?Usage = null,
 };
 
 fn roleToString(r: luv.Role) []const u8 {
@@ -250,11 +252,12 @@ pub fn fromOpenAI(resp: Response, alloc: std.mem.Allocator) FromError!luv.Reply 
             .tool_calls = tool_calls,
         },
         .stop_reason = stopReasonFrom(choice.finish_reason),
-        .usage = .{
-            .prompt_tokens = resp.usage.prompt_tokens,
-            .completion_tokens = resp.usage.completion_tokens,
-            .total_tokens = resp.usage.total_tokens,
-        },
+        // Match the TS port: usage present only when the wire carried it.
+        .usage = if (resp.usage) |u| luv.Usage{
+            .prompt_tokens = u.prompt_tokens,
+            .completion_tokens = u.completion_tokens,
+            .total_tokens = u.total_tokens,
+        } else null,
     };
 }
 
