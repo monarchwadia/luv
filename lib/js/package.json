@@ -34,12 +34,12 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "@types/bun": "^1.0.0",
-    "typescript": "^6.0.3"
+    "@types/bun": "1.0.0",
+    "eslint": "10.4.0",
+    "typescript": "6.0.3"
   },
   "engines": {
-    "bun": ">=1.0.0",
-    "node": ">=20.0.0"
+    "bun": ">=1.0.0"
   },
   "private": true
 }
