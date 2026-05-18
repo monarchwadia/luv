@@ -16,6 +16,7 @@ pub const wasm_codec = @import("wasm_abi/codec.zig");
 pub const wasm_effect = @import("wasm_abi/effect.zig");
 pub const wasm_exports = @import("wasm_abi/exports.zig");
 pub const agent = @import("agent/agent.zig");
+pub const agent_machine = @import("agent/agent_machine.zig");
 
 // Force analysis of the wasm_abi/exports.zig file so its `export fn`
 // declarations land in the wasm artifact even when nothing in this file
@@ -54,4 +55,5 @@ test {
     _ = wasm_effect;
     _ = wasm_exports;
     _ = agent;
+    _ = agent_machine;
 }
