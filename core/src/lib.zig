@@ -15,6 +15,7 @@ pub const requester_openai_stream = @import("requesters/openai/openai_stream.zig
 pub const wasm_codec = @import("wasm_abi/codec.zig");
 pub const wasm_abi_descriptor = @import("wasm_abi/abi.zig");
 pub const wasm_wire = @import("wasm_abi/wire.zig");
+pub const wasm_schema_codec = @import("wasm_abi/schema_codec.zig");
 pub const wasm_effect = @import("wasm_abi/effect.zig");
 pub const wasm_exports = @import("wasm_abi/exports.zig");
 pub const agent = @import("agent/agent.zig");
@@ -56,6 +57,7 @@ test {
     _ = wasm_codec;
     _ = wasm_abi_descriptor;
     _ = wasm_wire;
+    _ = wasm_schema_codec;
     _ = wasm_effect;
     _ = wasm_exports;
     _ = agent;
