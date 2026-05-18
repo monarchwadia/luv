@@ -622,24 +622,14 @@ export fn agent_poll(handle: usize, out_ptr_out: usize, out_len_out: usize) i32 
 
     switch (p) {
         .provider_send => |sp| {
+            // Emit just the CURRENT conversation (model/tools/opts are
+            // constant — the host driver holds them from start). The driver
+            // decodes this with codec.ts decodeConversation.
             const wmsgs = luvToWireMessages(sp.conversation, a) catch return -1;
-            const wtools = a.alloc(codec.WireTool, sp.tools.len) catch return -1;
-            for (sp.tools, 0..) |t, i| {
-                const s = std.json.Stringify.valueAlloc(a, t.input_schema, .{}) catch return -1;
-                wtools[i] = .{ .name = t.name, .description = t.description, .input_schema = s };
-            }
-            const wire = codec.encodeSendRequest(.{
-                .arena = undefined,
-                .model = sp.model,
-                .messages = wmsgs,
-                .max_tokens = sp.max_tokens,
-                .temperature = sp.temperature,
-                .stream = false,
-                .tools = wtools,
-            }, a) catch return -1;
-            const out = allocator.alloc(u8, 1 + wire.len) catch return -1;
+            const conv_bytes = codec.encodeConversation(wmsgs, a) catch return -1;
+            const out = allocator.alloc(u8, 1 + conv_bytes.len) catch return -1;
             out[0] = 0;
-            @memcpy(out[1..], wire);
+            @memcpy(out[1..], conv_bytes);
             writeOutPtrLen(out_ptr_out, out_len_out, @intFromPtr(out.ptr), @intCast(out.len));
             return 0;
         },

@@ -190,6 +190,42 @@ export function decodeReply(bytes: Uint8Array): CodecReply {
   return { role, stopReason, text, toolCalls, usage };
 }
 
+/** Inverse of decodeReply — encodes a Reply to feed the agent machine
+ *  (mirrors core/src/wasm_abi/codec.zig decodeReply's wire). */
+export function encodeReply(reply: CodecReply): Uint8Array {
+  const w = new Writer();
+  const str = (s: string): void => {
+    const b = utf8.encode(s);
+    w.u32(b.length);
+    w.bytes(b);
+  };
+  w.u8(reply.role);
+  w.u8(reply.stopReason);
+  str(reply.text);
+  w.u32(reply.toolCalls.length);
+  for (const c of reply.toolCalls) {
+    str(c.id);
+    str(c.name);
+    str(c.args);
+    if (c.result == null) {
+      w.u8(0);
+    } else {
+      w.u8(1);
+      w.u8(c.result.ok ? 1 : 0);
+      str(c.result.content);
+    }
+  }
+  if (reply.usage == null) {
+    w.u8(0);
+  } else {
+    w.u8(1);
+    w.u32(reply.usage.prompt);
+    w.u32(reply.usage.completion);
+    w.u32(reply.usage.total);
+  }
+  return w.out();
+}
+
 export function decodeEvents(bytes: Uint8Array): CodecEvent[] {
   const r = new Reader(bytes);
   const count = r.u32();

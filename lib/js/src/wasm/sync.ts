@@ -24,6 +24,12 @@ interface SyncExports {
   luv_decoder_new(): number;
   luv_decoder_free(handle: number): void;
   luv_decoder_feed(h: number, i: number, l: number, a: number, b: number): number;
+  agent_start(i: number, l: number): number;
+  agent_poll(h: number, a: number, b: number): number;
+  agent_feed_reply(h: number, i: number, l: number): number;
+  agent_feed_tools(h: number, i: number, l: number): number;
+  agent_abort(h: number): void;
+  agent_destroy(h: number): void;
   // Generic lookup for the per-brick (i,l,a,b)->i32 exports.
   [name: string]: unknown;
 }
@@ -134,4 +140,70 @@ export function decoderFeed(handle: number, chunk: Uint8Array): Uint8Array {
     if (chunk.length > 0) ex.luv_free(inPtr, chunk.length);
     ex.luv_free(cell, 8);
   }
+}
+
+// Sans-IO agent loop — handle-based (for the agent host driver, E.3).
+export function agentStart(input: Uint8Array): number {
+  let inPtr = 0;
+  if (input.length > 0) {
+    inPtr = ex.luv_alloc(input.length);
+    if (inPtr === 0) throw new Error("luv_alloc failed");
+    u8().set(input, inPtr);
+  }
+  try {
+    const h = ex.agent_start(inPtr, input.length);
+    if (h === 0) throw new Error("agent_start failed");
+    return h;
+  } finally {
+    if (input.length > 0) ex.luv_free(inPtr, input.length);
+  }
+}
+
+/** poll -> the tag+payload frame (caller parses tag byte 0). */
+export function agentPoll(handle: number): Uint8Array {
+  const cell = ex.luv_alloc(8);
+  try {
+    const st = ex.agent_poll(handle, cell, cell + 4);
+    if (st !== 0) throw new Error(`agent_poll failed: status ${st}`);
+    const op = dv().getUint32(cell, true);
+    const ol = dv().getUint32(cell + 4, true);
+    const out = u8().slice(op, op + ol);
+    ex.luv_free(op, ol);
+    return out;
+  } finally {
+    ex.luv_free(cell, 8);
+  }
+}
+
+function agentFeed(
+  fn: (h: number, i: number, l: number) => number,
+  handle: number,
+  bytes: Uint8Array,
+  what: string,
+): void {
+  let p = 0;
+  if (bytes.length > 0) {
+    p = ex.luv_alloc(bytes.length);
+    if (p === 0) throw new Error("luv_alloc failed");
+    u8().set(bytes, p);
+  }
+  try {
+    const st = fn(handle, p, bytes.length);
+    if (st !== 0) throw new Error(`${what} failed: status ${st}`);
+  } finally {
+    if (bytes.length > 0) ex.luv_free(p, bytes.length);
+  }
+}
+
+export function agentFeedReply(handle: number, bytes: Uint8Array): void {
+  agentFeed((h, i, l) => ex.agent_feed_reply(h, i, l), handle, bytes, "agent_feed_reply");
+}
+export function agentFeedTools(handle: number, bytes: Uint8Array): void {
+  agentFeed((h, i, l) => ex.agent_feed_tools(h, i, l), handle, bytes, "agent_feed_tools");
+}
+export function agentAbort(handle: number): void {
+  ex.agent_abort(handle);
+}
+export function agentDestroy(handle: number): void {
+  ex.agent_destroy(handle);
 }
