@@ -275,6 +275,152 @@ export fn luv_parse_anthropic_reply(
     return 0;
 }
 
+const tool_args = @import("../morphisms/luv/tool_args.zig");
+const error_classify = @import("../morphisms/luv/error_classify.zig");
+const object_extract = @import("../morphisms/luv/object_extract.zig");
+
+fn emitStatusMsg(out_ptr_out: usize, out_len_out: usize, status: u8, msg: []const u8) i32 {
+    // Wire: u8 status; if status != 0: u32 msg_len; msg bytes.
+    const total: usize = if (status == 0) 1 else 5 + msg.len;
+    const buf = allocator.alloc(u8, total) catch return -1;
+    buf[0] = status;
+    if (status != 0) {
+        std.mem.writeInt(u32, buf[1..5], @intCast(msg.len), .little);
+        @memcpy(buf[5..], msg);
+    }
+    writeOutPtrLen(out_ptr_out, out_len_out, @intFromPtr(buf.ptr), @intCast(buf.len));
+    return 0;
+}
+
+/// Validate tool-call arguments against a JSON schema.
+/// In:  u32 args_len; args(JSON); u8 schema_present; [u32 schema_len; schema(JSON)]
+/// Out: u8 status (0=ok, 1=invalid, 2=bad-input); [u32 msg_len; msg] when !=0
+export fn luv_validate_tool_args(
+    in_ptr: usize,
+    in_len: usize,
+    out_ptr_out: usize,
+    out_len_out: usize,
+) i32 {
+    const bytes = sliceFromAbi(in_ptr, in_len);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    var pos: usize = 0;
+    if (bytes.len < 4) return emitStatusMsg(out_ptr_out, out_len_out, 2, "truncated");
+    const args_len = std.mem.readInt(u32, bytes[0..4], .little);
+    pos = 4;
+    if (pos + args_len + 1 > bytes.len) return emitStatusMsg(out_ptr_out, out_len_out, 2, "truncated");
+    const args_bytes = bytes[pos .. pos + args_len];
+    pos += args_len;
+    const schema_present = bytes[pos];
+    pos += 1;
+    var schema: ?std.json.Value = null;
+    if (schema_present != 0) {
+        if (pos + 4 > bytes.len) return emitStatusMsg(out_ptr_out, out_len_out, 2, "truncated");
+        const slen = std.mem.readInt(u32, bytes[pos..][0..4], .little);
+        pos += 4;
+        if (pos + slen > bytes.len) return emitStatusMsg(out_ptr_out, out_len_out, 2, "truncated");
+        schema = std.json.parseFromSliceLeaky(std.json.Value, a, bytes[pos .. pos + slen], .{}) catch
+            return emitStatusMsg(out_ptr_out, out_len_out, 2, "bad schema json");
+    }
+    const args_val = std.json.parseFromSliceLeaky(std.json.Value, a, args_bytes, .{}) catch
+        return emitStatusMsg(out_ptr_out, out_len_out, 2, "bad args json");
+
+    var err: tool_args.ToolArgsError = undefined;
+    _ = tool_args.parseArguments(.{ .id = "", .name = "", .arguments = args_val }, schema, a, &err) catch |e| switch (e) {
+        error.OutOfMemory => return -1,
+        error.ToolArgs => return emitStatusMsg(out_ptr_out, out_len_out, 1, err.full),
+    };
+    return emitStatusMsg(out_ptr_out, out_len_out, 0, "");
+}
+
+/// Classify an HTTP error.
+/// In:  u32 status; u32 body_len; body; u8 ra_present; [u32 ra_len; ra]; i64 now_ms
+/// Out: u8 kind; u16 status; u8 retry_present; [u64 retry_after_ms]
+export fn luv_classify_error(
+    in_ptr: usize,
+    in_len: usize,
+    out_ptr_out: usize,
+    out_len_out: usize,
+) i32 {
+    const bytes = sliceFromAbi(in_ptr, in_len);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    var pos: usize = 0;
+    if (bytes.len < 8) return -2;
+    const http_status: u16 = @intCast(std.mem.readInt(u32, bytes[0..4], .little));
+    pos = 4;
+    const body_len = std.mem.readInt(u32, bytes[pos..][0..4], .little);
+    pos += 4;
+    if (pos + body_len + 1 > bytes.len) return -2;
+    const body = bytes[pos .. pos + body_len];
+    pos += body_len;
+    const ra_present = bytes[pos];
+    pos += 1;
+    var ra: ?[]const u8 = null;
+    if (ra_present != 0) {
+        if (pos + 4 > bytes.len) return -2;
+        const ral = std.mem.readInt(u32, bytes[pos..][0..4], .little);
+        pos += 4;
+        if (pos + ral > bytes.len) return -2;
+        ra = bytes[pos .. pos + ral];
+        pos += ral;
+    }
+    if (pos + 8 > bytes.len) return -2;
+    const now_ms = std.mem.readInt(i64, bytes[pos..][0..8], .little);
+
+    const c = error_classify.classifyError(arena.allocator(), http_status, body, ra, now_ms);
+    const has_ra = c.retry_after_ms != null;
+    const total: usize = 1 + 2 + 1 + (if (has_ra) @as(usize, 8) else 0);
+    const buf = allocator.alloc(u8, total) catch return -1;
+    buf[0] = @intFromEnum(c.kind);
+    std.mem.writeInt(u16, buf[1..3], c.status, .little);
+    buf[3] = if (has_ra) 1 else 0;
+    if (c.retry_after_ms) |ms| std.mem.writeInt(u64, buf[4..12], ms, .little);
+    writeOutPtrLen(out_ptr_out, out_len_out, @intFromPtr(buf.ptr), @intCast(buf.len));
+    return 0;
+}
+
+/// Extract + schema-validate a structured object from model text.
+/// In:  u32 text_len; text; u32 schema_len; schema(JSON)
+/// Out: u8 status (0=ok, 1=non-json, 2=schema-fail, 3=bad-input); [u32 msg_len; msg]
+export fn luv_extract_object(
+    in_ptr: usize,
+    in_len: usize,
+    out_ptr_out: usize,
+    out_len_out: usize,
+) i32 {
+    const bytes = sliceFromAbi(in_ptr, in_len);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    if (bytes.len < 4) return emitStatusMsg(out_ptr_out, out_len_out, 3, "truncated");
+    const text_len = std.mem.readInt(u32, bytes[0..4], .little);
+    var pos: usize = 4;
+    if (pos + text_len + 4 > bytes.len) return emitStatusMsg(out_ptr_out, out_len_out, 3, "truncated");
+    const text = bytes[pos .. pos + text_len];
+    pos += text_len;
+    const schema_len = std.mem.readInt(u32, bytes[pos..][0..4], .little);
+    pos += 4;
+    if (pos + schema_len > bytes.len) return emitStatusMsg(out_ptr_out, out_len_out, 3, "truncated");
+    const schema = std.json.parseFromSliceLeaky(std.json.Value, a, bytes[pos .. pos + schema_len], .{}) catch
+        return emitStatusMsg(out_ptr_out, out_len_out, 3, "bad schema json");
+
+    var failure: object_extract.ValidationFailure = undefined;
+    var extracted = object_extract.extractObject(a, text, schema, &failure) catch |e| switch (e) {
+        error.NonJsonContent => return emitStatusMsg(out_ptr_out, out_len_out, 1, failure.message),
+        error.SchemaValidationFailed => {
+            const m = object_extract.formatSchemaError(a, failure) catch return -1;
+            return emitStatusMsg(out_ptr_out, out_len_out, 2, m);
+        },
+    };
+    extracted.deinit();
+    return emitStatusMsg(out_ptr_out, out_len_out, 0, "");
+}
+
 /// Allocate a streaming Decoder. Returns its address (treat as opaque handle).
 export fn luv_decoder_new() usize {
     const dec_ptr = allocator.create(stream_morphism.Decoder) catch return 0;
@@ -492,4 +638,96 @@ test "luv_parse_anthropic_reply: minimal response → codec Reply (assistant/end
     try testing.expect(enc.len >= 6);
     try testing.expectEqual(@as(u8, 2), enc[0]); // role=assistant
     try testing.expectEqual(@as(u8, 0), enc[1]); // stop_reason=end_turn
+}
+
+fn callRaw(
+    f: *const fn (usize, usize, usize, usize) callconv(.c) i32,
+    input: []const u8,
+) struct { status: i32, out: []const u8, ptr: usize, len: usize } {
+    var op: usize = 0;
+    var ol: usize = 0;
+    const st = f(
+        @intCast(@intFromPtr(input.ptr)),
+        @intCast(input.len),
+        @intCast(@intFromPtr(&op)),
+        @intCast(@intFromPtr(&ol)),
+    );
+    const native: []const u8 = if (st == 0)
+        @as([*]const u8, @ptrFromInt(@as(usize, op)))[0..@as(usize, ol)]
+    else
+        &.{};
+    return .{ .status = st, .out = native, .ptr = op, .len = ol };
+}
+
+test "luv_validate_tool_args: ok and invalid" {
+    // args={"x":1}, schema={"type":"object","properties":{"x":{"type":"number"}}}
+    const args = "{\"x\":1}";
+    const schema = "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"number\"}}}";
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try buf.appendSlice(testing.allocator, &@as([4]u8, @bitCast(@as(u32, @intCast(args.len)))));
+    try buf.appendSlice(testing.allocator, args);
+    try buf.append(testing.allocator, 1);
+    try buf.appendSlice(testing.allocator, &@as([4]u8, @bitCast(@as(u32, @intCast(schema.len)))));
+    try buf.appendSlice(testing.allocator, schema);
+    const r = callRaw(&luv_validate_tool_args, buf.items);
+    try testing.expectEqual(@as(i32, 0), r.status);
+    try testing.expectEqual(@as(u8, 0), r.out[0]); // ok
+    luv_free(r.ptr, r.len);
+
+    // wrong type → invalid
+    const bad = "{\"x\":\"nope\"}";
+    var b2: std.ArrayList(u8) = .empty;
+    defer b2.deinit(testing.allocator);
+    try b2.appendSlice(testing.allocator, &@as([4]u8, @bitCast(@as(u32, @intCast(bad.len)))));
+    try b2.appendSlice(testing.allocator, bad);
+    try b2.append(testing.allocator, 1);
+    try b2.appendSlice(testing.allocator, &@as([4]u8, @bitCast(@as(u32, @intCast(schema.len)))));
+    try b2.appendSlice(testing.allocator, schema);
+    const r2 = callRaw(&luv_validate_tool_args, b2.items);
+    try testing.expectEqual(@as(u8, 1), r2.out[0]); // invalid
+    luv_free(r2.ptr, r2.len);
+}
+
+test "luv_classify_error: 401 -> auth, 429 -> rate_limit" {
+    // wire: u32 status, u32 body_len, u8 ra_present, i64 now_ms = 17 bytes
+    var b: [17]u8 = undefined;
+    std.mem.writeInt(u32, b[0..4], 401, .little);
+    std.mem.writeInt(u32, b[4..8], 0, .little);
+    b[8] = 0;
+    std.mem.writeInt(i64, b[9..17], 0, .little);
+    const r = callRaw(&luv_classify_error, &b);
+    try testing.expectEqual(@as(i32, 0), r.status);
+    try testing.expectEqual(@as(u8, @intFromEnum(error_classify.ErrorKind.auth)), r.out[0]);
+    luv_free(r.ptr, r.len);
+
+    std.mem.writeInt(u32, b[0..4], 429, .little);
+    const r2 = callRaw(&luv_classify_error, &b);
+    try testing.expectEqual(@as(u8, @intFromEnum(error_classify.ErrorKind.rate_limit)), r2.out[0]);
+    luv_free(r2.ptr, r2.len);
+}
+
+test "luv_extract_object: ok and non-json" {
+    const schema = "{\"type\":\"object\"}";
+    const text = "{\"a\":1}";
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    try buf.appendSlice(testing.allocator, &@as([4]u8, @bitCast(@as(u32, @intCast(text.len)))));
+    try buf.appendSlice(testing.allocator, text);
+    try buf.appendSlice(testing.allocator, &@as([4]u8, @bitCast(@as(u32, @intCast(schema.len)))));
+    try buf.appendSlice(testing.allocator, schema);
+    const r = callRaw(&luv_extract_object, buf.items);
+    try testing.expectEqual(@as(u8, 0), r.out[0]); // ok
+    luv_free(r.ptr, r.len);
+
+    const notjson = "not json at all";
+    var b2: std.ArrayList(u8) = .empty;
+    defer b2.deinit(testing.allocator);
+    try b2.appendSlice(testing.allocator, &@as([4]u8, @bitCast(@as(u32, @intCast(notjson.len)))));
+    try b2.appendSlice(testing.allocator, notjson);
+    try b2.appendSlice(testing.allocator, &@as([4]u8, @bitCast(@as(u32, @intCast(schema.len)))));
+    try b2.appendSlice(testing.allocator, schema);
+    const r2 = callRaw(&luv_extract_object, b2.items);
+    try testing.expectEqual(@as(u8, 1), r2.out[0]); // non-json
+    luv_free(r2.ptr, r2.len);
 }
