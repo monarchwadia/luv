@@ -268,7 +268,7 @@ pub fn toAnthropic(
     };
 }
 
-pub const FromError = error{ContentNotArray} || std.mem.Allocator.Error;
+pub const FromError = error{ ContentNotArray, MissingToolUseField } || std.mem.Allocator.Error;
 
 /// Convert a parsed Anthropic Response into a luv.Reply.
 ///
@@ -291,11 +291,10 @@ pub fn fromAnthropic(resp: Response, alloc: std.mem.Allocator) FromError!luv.Rep
         if (std.mem.eql(u8, block.type, "text")) {
             if (block.text) |t| try text.appendSlice(alloc, t);
         } else if (std.mem.eql(u8, block.type, "tool_use")) {
-            // TS throws if id or name missing. We mirror by skipping the
-            // typed fields when absent — but to keep parity with the
-            // "missing id/name" error contract we treat absent as empty.
-            const id = block.id orelse "";
-            const name = block.name orelse "";
+            // Match the TS port: a tool_use block missing id or name is an
+            // error (not silently defaulted to "").
+            const id = block.id orelse return error.MissingToolUseField;
+            const name = block.name orelse return error.MissingToolUseField;
             const args: std.json.Value = block.input orelse .{ .object = .empty };
             try calls.append(alloc, .{
                 .id = try alloc.dupe(u8, id),

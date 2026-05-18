@@ -248,6 +248,7 @@ export fn luv_parse_anthropic_reply(
 
     const reply = anthropic.fromAnthropic(parsed.value, allocator) catch |err| return switch (err) {
         error.OutOfMemory => -1,
+        error.MissingToolUseField => -6,
         else => -3,
     };
     defer allocator.free(reply.message.text);

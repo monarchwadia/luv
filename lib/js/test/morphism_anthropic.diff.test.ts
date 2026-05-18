@@ -211,7 +211,7 @@ for (const c of replyCases) {
 // Reconcile would require Zig to detect non-array content pre-typed-parse and
 // surface a distinguishable error the flipped wrapper can re-wrap as
 // MorphismError. ContentNotArray is unreachable under typed parsing today.
-test.failing(
+test(
   "fromAnthropic parity: content not array (DIVERGENT — needs Zig reconcile)",
   () => {
     const wire = {
@@ -242,7 +242,7 @@ test.failing(
 // MorphismError(/missing id or name/); the Zig port substitutes "" and
 // returns the call. Reconcile would require Zig fromAnthropic to error when
 // a tool_use block lacks id/name instead of defaulting to "".
-test.failing(
+test(
   "fromAnthropic parity: tool_use missing id/name (DIVERGENT — needs Zig reconcile)",
   () => {
     const wire = {

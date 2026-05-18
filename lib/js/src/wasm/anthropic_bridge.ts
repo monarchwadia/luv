@@ -26,6 +26,10 @@ import type {
   AnthropicWireRequest,
   AnthropicWireResponse,
 } from "../morphism_anthropic.ts";
+// Value import (cycle-safe: used only at call time) so the bridge itself
+// honors the MorphismError(/content/) contract — same defensive non-typed
+// path openai keeps in TS for response_format.
+import { MorphismError } from "../morphism_anthropic.ts";
 
 const ROLE: Record<"system" | "user" | "assistant", number> = {
   system: 0,
@@ -87,6 +91,11 @@ export function buildAnthropicRequest(
 }
 
 export function parseAnthropicReply(wire: AnthropicWireResponse): Reply {
+  // Defensive non-typed path: Zig's typed parse can't distinguish a
+  // non-array `content`, so guard it here (matches the TS port contract).
+  if (!Array.isArray((wire as { content?: unknown }).content)) {
+    throw new MorphismError("fromAnthropic: response.content is not an array");
+  }
   const bytes = callWasm(
     "luv_parse_anthropic_reply",
     te.encode(JSON.stringify(wire)),
