@@ -24,6 +24,7 @@ const builtin = @import("builtin");
 const luv = @import("../morphisms/luv/luv.zig");
 const luv_stream = @import("../morphisms/luv/luv_stream.zig");
 const morphism = @import("../morphisms/openai/openai.zig");
+const anthropic = @import("../morphisms/anthropic/anthropic.zig");
 const stream_morphism = @import("../morphisms/openai/openai_stream.zig");
 const codec = @import("codec.zig");
 
@@ -150,6 +151,107 @@ export fn luv_parse_reply(
 
     // luv.Reply -> codec.WireReply: stringify tool-call args to opaque JSON
     // bytes at the boundary (codec stays std.json-free).
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const wcalls = a.alloc(codec.WireToolCall, reply.message.tool_calls.len) catch return -1;
+    for (reply.message.tool_calls, 0..) |c, j| {
+        const args = std.json.Stringify.valueAlloc(a, c.arguments, .{}) catch return -1;
+        const res: ?codec.WireToolResult = if (c.result) |rr| switch (rr) {
+            .ok => |s| codec.WireToolResult{ .ok = s },
+            .err => |s| codec.WireToolResult{ .err = s },
+        } else null;
+        wcalls[j] = .{ .id = c.id, .name = c.name, .args = args, .result = res };
+    }
+    const wreply: codec.WireReply = .{
+        .message = .{ .role = reply.message.role, .text = reply.message.text, .tool_calls = wcalls },
+        .stop_reason = reply.stop_reason,
+        .usage = reply.usage,
+    };
+
+    const encoded = codec.encodeReply(wreply, allocator) catch return -1;
+    writeOutPtrLen(out_ptr_out, out_len_out, @intFromPtr(encoded.ptr), @intCast(encoded.len));
+    return 0;
+}
+
+fn buildAnthropicWireJson(req: codec.SendRequestInput) ![]u8 {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const lmsgs = try a.alloc(luv.Message, req.messages.len);
+    for (req.messages, 0..) |wm, i| {
+        const calls = try a.alloc(luv.ToolCall, wm.tool_calls.len);
+        for (wm.tool_calls, 0..) |wc, j| {
+            const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, wc.args, .{});
+            const result: ?luv.ToolResult = if (wc.result) |rr| switch (rr) {
+                .ok => |s| luv.ToolResult{ .ok = s },
+                .err => |s| luv.ToolResult{ .err = s },
+            } else null;
+            calls[j] = .{ .id = wc.id, .name = wc.name, .arguments = parsed, .result = result };
+        }
+        lmsgs[i] = .{ .role = wm.role, .text = wm.text, .tool_calls = calls };
+    }
+
+    const ltools = try a.alloc(luv.Tool, req.tools.len);
+    for (req.tools, 0..) |wt, i| {
+        const schema = try std.json.parseFromSliceLeaky(std.json.Value, a, wt.input_schema, .{});
+        ltools[i] = .{ .name = wt.name, .description = wt.description, .input_schema = schema };
+    }
+
+    const wire = try anthropic.toAnthropic(lmsgs, .{
+        .model = req.model,
+        .max_tokens = req.max_tokens,
+        .temperature = req.temperature,
+        .stream = req.stream,
+        .tools = ltools,
+    }, allocator);
+
+    return std.json.Stringify.valueAlloc(allocator, wire, .{
+        .emit_null_optional_fields = false,
+    });
+}
+
+/// Decode the JS-supplied SendRequest, build the Anthropic wire JSON.
+/// Same codec contract as luv_build_request — provider-agnostic input.
+export fn luv_build_anthropic_request(
+    in_ptr: usize,
+    in_len: usize,
+    out_ptr_out: usize,
+    out_len_out: usize,
+) i32 {
+    var req = codec.decodeSendRequest(sliceFromAbi(in_ptr, in_len), allocator) catch |err| return switch (err) {
+        error.OutOfMemory => -1,
+        else => -2,
+    };
+    defer req.deinit(allocator);
+
+    const wire_json = buildAnthropicWireJson(req) catch |err| return switch (err) {
+        error.OutOfMemory => -1,
+        else => -2,
+    };
+    writeOutPtrLen(out_ptr_out, out_len_out, @intFromPtr(wire_json.ptr), @intCast(wire_json.len));
+    return 0;
+}
+
+/// Parse the Anthropic wire JSON response into a codec Reply.
+export fn luv_parse_anthropic_reply(
+    in_ptr: usize,
+    in_len: usize,
+    out_ptr_out: usize,
+    out_len_out: usize,
+) i32 {
+    const parsed = std.json.parseFromSlice(anthropic.Response, allocator, sliceFromAbi(in_ptr, in_len), .{
+        .ignore_unknown_fields = true,
+    }) catch return -3;
+    defer parsed.deinit();
+
+    const reply = anthropic.fromAnthropic(parsed.value, allocator) catch |err| return switch (err) {
+        error.OutOfMemory => -1,
+        else => -3,
+    };
+    defer allocator.free(reply.message.text);
+
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -332,4 +434,62 @@ test "luv_decoder lifecycle: feed 011 fixture → events end with stop end_turn"
     // Last event is stop end_turn (kind=2, stop_reason=0).
     try testing.expectEqual(@as(u8, 2), events_bytes[events_bytes.len - 2]);
     try testing.expectEqual(@as(u8, 0), events_bytes[events_bytes.len - 1]);
+}
+
+fn callBuildAnthropic(input_bytes: []const u8, alloc_for_test: std.mem.Allocator) ![]u8 {
+    var out_ptr: usize = 0;
+    var out_len: usize = 0;
+    const status = luv_build_anthropic_request(
+        @intCast(@intFromPtr(input_bytes.ptr)),
+        @intCast(input_bytes.len),
+        @intCast(@intFromPtr(&out_ptr)),
+        @intCast(@intFromPtr(&out_len)),
+    );
+    try testing.expectEqual(@as(i32, 0), status);
+    const native: []const u8 = @as([*]const u8, @ptrFromInt(@as(usize, out_ptr)))[0..@as(usize, out_len)];
+    const copy = try alloc_for_test.dupe(u8, native);
+    luv_free(out_ptr, out_len);
+    return copy;
+}
+
+test "luv_build_anthropic_request: codec input → anthropic wire JSON" {
+    // model="m", 1 user message "hi", no opts, no tools (new codec wire:
+    // per-message tool_call_count, then mt/temp present flags, stream,
+    // tool_count).
+    const input = [_]u8{
+        0x01, 0x00, 0x00, 0x00, 'm', // model_len=1
+        0x01, 0x00, 0x00, 0x00, // message_count=1
+        0x01, // role=user
+        0x02, 0x00, 0x00, 0x00, 'h', 'i', // text_len=2
+        0x00, 0x00, 0x00, 0x00, // tool_call_count=0
+        0x00, // max_tokens_present=0
+        0x00, // temperature_present=0
+        0x00, // stream=0
+        0x00, 0x00, 0x00, 0x00, // tool_count=0
+    };
+    const wire = try callBuildAnthropic(&input, testing.allocator);
+    defer testing.allocator.free(wire);
+    try testing.expect(std.mem.indexOf(u8, wire, "\"model\":\"m\"") != null);
+    try testing.expect(std.mem.indexOf(u8, wire, "\"max_tokens\":") != null); // anthropic requires it
+    try testing.expect(std.mem.indexOf(u8, wire, "\"hi\"") != null);
+}
+
+test "luv_parse_anthropic_reply: minimal response → codec Reply (assistant/end_turn)" {
+    const resp =
+        \\{"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}
+    ;
+    var out_ptr: usize = 0;
+    var out_len: usize = 0;
+    const status = luv_parse_anthropic_reply(
+        @intCast(@intFromPtr(resp.ptr)),
+        @intCast(resp.len),
+        @intCast(@intFromPtr(&out_ptr)),
+        @intCast(@intFromPtr(&out_len)),
+    );
+    try testing.expectEqual(@as(i32, 0), status);
+    const enc: []const u8 = @as([*]const u8, @ptrFromInt(@as(usize, out_ptr)))[0..@as(usize, out_len)];
+    defer luv_free(out_ptr, out_len);
+    try testing.expect(enc.len >= 6);
+    try testing.expectEqual(@as(u8, 2), enc[0]); // role=assistant
+    try testing.expectEqual(@as(u8, 0), enc[1]); // stop_reason=end_turn
 }

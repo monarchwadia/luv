@@ -31,7 +31,7 @@ const luv = @import("../luv/luv.zig");
 pub const Options = struct {
     model: []const u8,
     max_tokens: ?u32 = null,
-    temperature: ?f32 = null,
+    temperature: ?f64 = null,
     stream: bool = false,
     tools: []const luv.Tool = &.{},
 };
@@ -105,7 +105,7 @@ pub const Request = struct {
     max_tokens: u32,
     messages: []const RequestMessage,
     system: ?[]const u8 = null,
-    temperature: ?f32 = null,
+    temperature: ?f64 = null,
     stream: ?bool = null,
     tools: ?[]const ToolDef = null,
 };
@@ -122,8 +122,8 @@ pub const ResponseBlock = struct {
 };
 
 pub const ResponseUsage = struct {
-    input_tokens: u32,
-    output_tokens: u32,
+    input_tokens: u32 = 0,
+    output_tokens: u32 = 0,
 };
 
 pub const Response = struct {
@@ -134,7 +134,7 @@ pub const Response = struct {
     model: ?[]const u8 = null,
     stop_reason: ?[]const u8 = null,
     stop_sequence: ?[]const u8 = null,
-    usage: ResponseUsage,
+    usage: ?ResponseUsage = null,
 };
 
 // ---------------------------------------------------------------------------
@@ -318,11 +318,12 @@ pub fn fromAnthropic(resp: Response, alloc: std.mem.Allocator) FromError!luv.Rep
             .tool_calls = tool_calls,
         },
         .stop_reason = stopReasonFrom(resp.stop_reason),
-        .usage = .{
-            .prompt_tokens = resp.usage.input_tokens,
-            .completion_tokens = resp.usage.output_tokens,
-            .total_tokens = resp.usage.input_tokens + resp.usage.output_tokens,
-        },
+        // Match the TS port: usage present only when the wire carried it.
+        .usage = if (resp.usage) |u| luv.Usage{
+            .prompt_tokens = u.input_tokens,
+            .completion_tokens = u.output_tokens,
+            .total_tokens = u.input_tokens + u.output_tokens,
+        } else null,
     };
 }
 
