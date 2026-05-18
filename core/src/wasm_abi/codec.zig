@@ -354,3 +354,118 @@ test "encodeEvents: start + text + stop sequence round-trips to expected bytes" 
     };
     try testing.expectEqualSlices(u8, &expected, bytes);
 }
+
+// ---------------------------------------------------------------------------
+// Stream A — cross-impl conformance corpus
+//
+// codec_conformance.json is the single source of truth for byte parity
+// between this codec and the generated TS codec. This test proves the corpus
+// matches the implementation, so the TS side (A2) can assert the same bytes.
+
+fn stopReasonFromByte(b: u8) luv.StopReason {
+    return switch (b) {
+        0 => .end_turn,
+        1 => .max_tokens,
+        2 => .content_filter,
+        3 => .stop_sequence,
+        4 => .tool_use,
+        else => .other,
+    };
+}
+
+const CorpusReplyCase = struct {
+    name: []const u8,
+    value: struct { role: u8, stopReason: u8, text: []const u8 },
+    hex: []const u8,
+};
+const CorpusEventJson = struct {
+    kind: u8,
+    role: ?u8 = null,
+    delta: ?[]const u8 = null,
+    stopReason: ?u8 = null,
+};
+const CorpusEventsCase = struct {
+    name: []const u8,
+    events: []const CorpusEventJson,
+    hex: []const u8,
+};
+const CorpusMsg = struct { role: u8, text: []const u8 };
+const CorpusSendReqCase = struct {
+    name: []const u8,
+    hex: []const u8,
+    value: struct {
+        model: []const u8,
+        messages: []const CorpusMsg,
+        maxTokens: ?u32 = null,
+        temperature: ?f32 = null,
+        stream: bool,
+    },
+};
+const Corpus = struct {
+    encodeReply: []const CorpusReplyCase,
+    encodeEvents: []const CorpusEventsCase,
+    decodeSendRequest: []const CorpusSendReqCase,
+};
+
+test "conformance corpus matches codec implementation" {
+    const json_bytes = @embedFile("codec_conformance.json");
+    const parsed = try std.json.parseFromSlice(
+        Corpus,
+        testing.allocator,
+        json_bytes,
+        .{ .ignore_unknown_fields = true },
+    );
+    defer parsed.deinit();
+    const corpus = parsed.value;
+
+    var hexbuf: [1024]u8 = undefined;
+
+    for (corpus.encodeReply) |c| {
+        const reply: luv.Reply = .{
+            .message = .{ .role = try roleFromByte(c.value.role), .text = c.value.text },
+            .stop_reason = stopReasonFromByte(c.value.stopReason),
+        };
+        const got = try encodeReply(reply, testing.allocator);
+        defer testing.allocator.free(got);
+        const exp = try std.fmt.hexToBytes(&hexbuf, c.hex);
+        testing.expectEqualSlices(u8, exp, got) catch |e| {
+            std.debug.print("encodeReply '{s}' mismatch\n", .{c.name});
+            return e;
+        };
+    }
+
+    for (corpus.encodeEvents) |c| {
+        const evs = try testing.allocator.alloc(luv_stream.Event, c.events.len);
+        defer testing.allocator.free(evs);
+        for (c.events, 0..) |ej, i| {
+            evs[i] = switch (ej.kind) {
+                0 => .{ .start = .{ .role = try roleFromByte(ej.role.?) } },
+                1 => .{ .text = .{ .delta = ej.delta.? } },
+                2 => .{ .stop = .{ .stop_reason = stopReasonFromByte(ej.stopReason.?) } },
+                else => unreachable,
+            };
+        }
+        const got = try encodeEvents(evs, testing.allocator);
+        defer testing.allocator.free(got);
+        const exp = try std.fmt.hexToBytes(&hexbuf, c.hex);
+        testing.expectEqualSlices(u8, exp, got) catch |e| {
+            std.debug.print("encodeEvents '{s}' mismatch\n", .{c.name});
+            return e;
+        };
+    }
+
+    for (corpus.decodeSendRequest) |c| {
+        const in = try std.fmt.hexToBytes(&hexbuf, c.hex);
+        var req = try decodeSendRequest(in, testing.allocator);
+        defer req.deinit(testing.allocator);
+        try testing.expectEqualStrings(c.value.model, req.model);
+        try testing.expectEqual(c.value.messages.len, req.messages.len);
+        for (c.value.messages, 0..) |em, i| {
+            try testing.expectEqual(try roleFromByte(em.role), req.messages[i].role);
+            try testing.expectEqualStrings(em.text, req.messages[i].text);
+        }
+        try testing.expectEqual(c.value.maxTokens, req.max_tokens);
+        try testing.expectEqual(c.value.temperature, req.temperature);
+        try testing.expectEqual(c.value.stream, req.stream);
+    }
+}
