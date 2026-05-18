@@ -1,4 +1,4 @@
-.PHONY: snapshot fmt test build e2e js js-test js-matrix ci
+.PHONY: snapshot fmt test build gen gen-check e2e js js-test js-matrix ci
 
 BUN ?= $(shell command -v bun 2>/dev/null || echo $$HOME/.bun/bin/bun)
 
@@ -22,7 +22,7 @@ snapshot:
 	done
 
 fmt:
-	$(ZIG) fmt --check core/src core/build.zig test-tools/build.zig test-tools/e2e test-tools/record_openai.zig
+	$(ZIG) fmt --check core/src core/build.zig core/tools test-tools/build.zig test-tools/e2e test-tools/record_openai.zig
 
 test:
 	cd core && $(ZIG) build test
@@ -53,8 +53,20 @@ e2e:
 	test -n "$$OPENAI_API_KEY" || { echo "error: OPENAI_API_KEY missing from .env"; exit 1; }; \
 	cd test-tools && $(ZIG) build e2e
 
-# Comprehensive CI: format check, all unit tests (Zig core + JS Bun), wasm
-# build, publishable JS build, and the full consumer integration matrix.
+# Regenerate the committed wasm-derived artifacts from current Zig:
+#   wasm -> embedded.generated.ts, luv.zig -> types.generated.ts.
+gen:
+	cd core && $(ZIG) build wasm gen-ts
+	cd lib/js && $(BUN) run build:embed
+
+# CI integrity: regenerate, then fail if the committed artifacts drifted
+# (i.e. Zig changed but embed/gen-ts wasn't re-run + committed).
+gen-check: gen
+	@git diff --exit-code -- lib/js/src/wasm/embedded.generated.ts lib/js/src/types.generated.ts \
+	  || { echo "error: generated artifacts stale — run 'make gen' and commit"; exit 1; }
+
+# Comprehensive CI: format check, all unit tests (Zig core + JS Bun),
+# generated-artifact freshness, publishable JS build, full consumer matrix.
 # Excludes `e2e` (needs live OPENAI_API_KEY) — run that separately.
-ci: fmt test build js js-test js-matrix
+ci: fmt test gen-check js js-test js-matrix
 	@echo "CI: all checks passed"
