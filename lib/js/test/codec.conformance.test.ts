@@ -23,7 +23,16 @@ const corpus = JSON.parse(
     hex: string;
     value: {
       model: string;
-      messages: { role: number; text: string }[];
+      messages: {
+        role: number;
+        text: string;
+        toolCalls: {
+          id: string;
+          name: string;
+          args: string;
+          result: { ok: boolean; content: string } | null;
+        }[];
+      }[];
       maxTokens: number | null;
       temperature: number | null;
       stream: boolean;

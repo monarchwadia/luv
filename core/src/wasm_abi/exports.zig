@@ -77,14 +77,36 @@ export fn luv_build_request(
 
     const wire_json = buildWireJson(req) catch |err| return switch (err) {
         error.OutOfMemory => -1,
+        else => -2,
     };
 
     writeOutPtrLen(out_ptr_out, out_len_out, @intFromPtr(wire_json.ptr), @intCast(wire_json.len));
     return 0;
 }
 
-fn buildWireJson(req: codec.SendRequestInput) std.mem.Allocator.Error![]u8 {
-    const wire = try morphism.toOpenAI(req.messages, .{
+fn buildWireJson(req: codec.SendRequestInput) ![]u8 {
+    // Convert codec WireMessage[] -> luv.Message[]. The codec keeps tool-call
+    // arguments as opaque JSON bytes; JSON parsing happens here, at the
+    // morphism boundary (codec boundary: no std.json in the wire codec).
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const lmsgs = try a.alloc(luv.Message, req.messages.len);
+    for (req.messages, 0..) |wm, i| {
+        const calls = try a.alloc(luv.ToolCall, wm.tool_calls.len);
+        for (wm.tool_calls, 0..) |wc, j| {
+            const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, wc.args, .{});
+            const result: ?luv.ToolResult = if (wc.result) |rr| switch (rr) {
+                .ok => |s| luv.ToolResult{ .ok = s },
+                .err => |s| luv.ToolResult{ .err = s },
+            } else null;
+            calls[j] = .{ .id = wc.id, .name = wc.name, .arguments = parsed, .result = result };
+        }
+        lmsgs[i] = .{ .role = wm.role, .text = wm.text, .tool_calls = calls };
+    }
+
+    const wire = try morphism.toOpenAI(lmsgs, .{
         .model = req.model,
         .max_tokens = req.max_tokens,
         .temperature = req.temperature,
@@ -212,22 +234,15 @@ fn callParseReply(input_bytes: []const u8, alloc_for_test: std.mem.Allocator) ![
 test "luv_build_request: codec input → openai wire JSON contains user message" {
     // Build codec-encoded SendRequest matching 001_single_user.
     const sample_input = [_]u8{
-        // model_len = 11, "gpt-4o-mini"
-        0x0B, 0x00, 0x00, 0x00,
-        'g',  'p',  't',  '-',
-        '4',  'o',  '-',  'm',
-        'i',  'n',  'i',
-        // message_count = 1, role=user, "hi"
-         0x01,
-        0x00, 0x00, 0x00, 0x01,
-        0x02, 0x00, 0x00, 0x00,
-        'h',  'i',
-        // max_tokens absent
-         0x00,
-        // temperature absent
-        0x00,
-        // stream = 0
-        0x00,
+        0x0B, 0x00, 0x00, 0x00, // model_len = 11
+        'g', 'p', 't', '-', '4', 'o', '-', 'm', 'i', 'n', 'i',
+        0x01, 0x00, 0x00, 0x00, // message_count = 1
+        0x01, // role = user
+        0x02, 0x00, 0x00, 0x00, 'h', 'i', // text_len = 2, "hi"
+        0x00, 0x00, 0x00, 0x00, // tool_call_count = 0
+        0x00, // max_tokens absent
+        0x00, // temperature absent
+        0x00, // stream = 0
     };
 
     const wire = try callBuildRequest(&sample_input, testing.allocator);

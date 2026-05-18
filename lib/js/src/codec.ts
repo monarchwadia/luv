@@ -10,9 +10,23 @@
 // higher layer. This module is the parity reference the generator must
 // reproduce byte-for-byte (gated by codec_conformance.json).
 
+export interface CodecToolResult {
+  readonly ok: boolean;
+  readonly content: string;
+}
+
+export interface CodecToolCall {
+  readonly id: string;
+  readonly name: string;
+  /** Opaque JSON text — the codec never parses it. */
+  readonly args: string;
+  readonly result: CodecToolResult | null;
+}
+
 export interface CodecMessage {
   readonly role: number; // 0=system 1=user 2=assistant
   readonly text: string;
+  readonly toolCalls: readonly CodecToolCall[];
 }
 
 export interface CodecSendRequest {
@@ -85,11 +99,27 @@ export function encodeSendRequest(req: CodecSendRequest): Uint8Array {
   w.u32(model.length);
   w.bytes(model);
   w.u32(req.messages.length);
+  const str = (s: string): void => {
+    const b = utf8.encode(s);
+    w.u32(b.length);
+    w.bytes(b);
+  };
   for (const m of req.messages) {
     w.u8(m.role);
-    const t = utf8.encode(m.text);
-    w.u32(t.length);
-    w.bytes(t);
+    str(m.text);
+    w.u32(m.toolCalls.length);
+    for (const c of m.toolCalls) {
+      str(c.id);
+      str(c.name);
+      str(c.args);
+      if (c.result == null) {
+        w.u8(0);
+      } else {
+        w.u8(1);
+        w.u8(c.result.ok ? 1 : 0);
+        str(c.result.content);
+      }
+    }
   }
   if (req.maxTokens == null) {
     w.u8(0);

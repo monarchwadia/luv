@@ -44,17 +44,38 @@ const std = @import("std");
 const luv = @import("../morphisms/luv/luv.zig");
 const luv_stream = @import("../morphisms/luv/luv_stream.zig");
 
+pub const WireToolResult = union(enum) {
+    ok: []const u8,
+    err: []const u8,
+};
+
+pub const WireToolCall = struct {
+    id: []const u8,
+    name: []const u8,
+    /// Opaque JSON bytes — the codec never parses these (codec boundary:
+    /// JSON lives at the morphism boundary, not in the wire codec).
+    args: []const u8,
+    result: ?WireToolResult = null,
+};
+
+pub const WireMessage = struct {
+    role: luv.Role,
+    text: []const u8,
+    tool_calls: []const WireToolCall = &.{},
+};
+
 pub const SendRequestInput = struct {
+    arena: std.heap.ArenaAllocator,
     model: []const u8,
-    messages: []const luv.Message,
+    messages: []const WireMessage,
     max_tokens: ?u32,
     temperature: ?f32,
     stream: bool,
 
-    pub fn deinit(self: *SendRequestInput, alloc: std.mem.Allocator) void {
-        for (self.messages) |m| alloc.free(m.text);
-        alloc.free(self.messages);
-        alloc.free(self.model);
+    /// All decoded memory is arena-owned; the alloc param is ignored (kept
+    /// for call-site compatibility). Single free, leak-safe on every path.
+    pub fn deinit(self: *SendRequestInput, _: std.mem.Allocator) void {
+        self.arena.deinit();
         self.* = undefined;
     }
 };
@@ -132,26 +153,46 @@ fn stopReasonToByte(s: luv.StopReason) u8 {
 }
 
 pub fn decodeSendRequest(bytes: []const u8, alloc: std.mem.Allocator) DecodeError!SendRequestInput {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+
     var r: Reader = .{ .bytes = bytes };
 
     const model_len = try r.readU32();
-    const model = try r.readSliceDup(model_len, alloc);
-    errdefer alloc.free(model);
+    const model = try r.readSliceDup(model_len, a);
 
     const message_count = try r.readU32();
-    const messages = try alloc.alloc(luv.Message, message_count);
-    errdefer alloc.free(messages);
-    var initialized: usize = 0;
-    errdefer for (messages[0..initialized]) |m| alloc.free(m.text);
+    const messages = try a.alloc(WireMessage, message_count);
 
     var i: usize = 0;
     while (i < message_count) : (i += 1) {
-        const role_byte = try r.readU8();
-        const role = try roleFromByte(role_byte);
+        const role = try roleFromByte(try r.readU8());
         const text_len = try r.readU32();
-        const text = try r.readSliceDup(text_len, alloc);
-        messages[i] = .{ .role = role, .text = text };
-        initialized = i + 1;
+        const text = try r.readSliceDup(text_len, a);
+
+        const tc_count = try r.readU32();
+        const calls = try a.alloc(WireToolCall, tc_count);
+        var cj: usize = 0;
+        while (cj < tc_count) : (cj += 1) {
+            const id_len = try r.readU32();
+            const id = try r.readSliceDup(id_len, a);
+            const name_len = try r.readU32();
+            const name = try r.readSliceDup(name_len, a);
+            const args_len = try r.readU32();
+            const args = try r.readSliceDup(args_len, a);
+            const res_present = try r.readU8();
+            var result: ?WireToolResult = null;
+            if (res_present != 0) {
+                const ok = try r.readU8();
+                const rlen = try r.readU32();
+                const content = try r.readSliceDup(rlen, a);
+                result = if (ok != 0) .{ .ok = content } else .{ .err = content };
+            }
+            calls[cj] = .{ .id = id, .name = name, .args = args, .result = result };
+        }
+
+        messages[i] = .{ .role = role, .text = text, .tool_calls = calls };
     }
 
     const max_tokens_present = try r.readU8();
@@ -163,6 +204,7 @@ pub fn decodeSendRequest(bytes: []const u8, alloc: std.mem.Allocator) DecodeErro
     const stream_byte = try r.readU8();
 
     return .{
+        .arena = arena,
         .model = model,
         .messages = messages,
         .max_tokens = max_tokens,
@@ -176,7 +218,16 @@ pub fn decodeSendRequest(bytes: []const u8, alloc: std.mem.Allocator) DecodeErro
 /// decodeSendRequest's wire exactly.
 pub fn encodeSendRequest(req: SendRequestInput, alloc: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
     var total: usize = 4 + req.model.len + 4;
-    for (req.messages) |m| total += 1 + 4 + m.text.len;
+    for (req.messages) |m| {
+        total += 1 + 4 + m.text.len + 4;
+        for (m.tool_calls) |c| {
+            total += 4 + c.id.len + 4 + c.name.len + 4 + c.args.len + 1;
+            if (c.result) |rr| total += 1 + 4 + (switch (rr) {
+                .ok => |s| s.len,
+                .err => |s| s.len,
+            });
+        }
+    }
     total += 1 + (if (req.max_tokens != null) @as(usize, 4) else 0);
     total += 1 + (if (req.temperature != null) @as(usize, 4) else 0);
     total += 1;
@@ -199,6 +250,39 @@ pub fn encodeSendRequest(req: SendRequestInput, alloc: std.mem.Allocator) std.me
         pos += 4;
         @memcpy(out[pos .. pos + m.text.len], m.text);
         pos += m.text.len;
+
+        std.mem.writeInt(u32, out[pos..][0..4], @intCast(m.tool_calls.len), .little);
+        pos += 4;
+        for (m.tool_calls) |c| {
+            inline for (.{ c.id, c.name, c.args }) |field| {
+                std.mem.writeInt(u32, out[pos..][0..4], @intCast(field.len), .little);
+                pos += 4;
+                @memcpy(out[pos .. pos + field.len], field);
+                pos += field.len;
+            }
+            if (c.result) |rr| {
+                out[pos] = 1;
+                pos += 1;
+                const content: []const u8 = switch (rr) {
+                    .ok => |s| blk: {
+                        out[pos] = 1;
+                        break :blk s;
+                    },
+                    .err => |s| blk: {
+                        out[pos] = 0;
+                        break :blk s;
+                    },
+                };
+                pos += 1;
+                std.mem.writeInt(u32, out[pos..][0..4], @intCast(content.len), .little);
+                pos += 4;
+                @memcpy(out[pos .. pos + content.len], content);
+                pos += content.len;
+            } else {
+                out[pos] = 0;
+                pos += 1;
+            }
+        }
     }
 
     if (req.max_tokens) |mt| {
@@ -289,21 +373,15 @@ test "decodeSendRequest: minimal request (model + 1 user message, no opts, no st
     // u8 temperature_present=0
     // u8 stream=0
     const bytes = [_]u8{
-        // model_len = 1
-        0x01, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x00, 0x00, // model_len = 1
         'm',
-        // message_count = 1
-         0x01, 0x00, 0x00,
-        0x00,
-        // role = 1 (user), text_len = 2, "hi"
-        0x01, 0x02, 0x00,
-        0x00, 0x00, 'h',  'i',
-        // max_tokens_present = 0
-        0x00,
-        // temperature_present = 0
-        0x00,
-        // stream = 0
-        0x00,
+        0x01, 0x00, 0x00, 0x00, // message_count = 1
+        0x01, // role = 1 (user)
+        0x02, 0x00, 0x00, 0x00, 'h', 'i', // text_len = 2, "hi"
+        0x00, 0x00, 0x00, 0x00, // tool_call_count = 0
+        0x00, // max_tokens_present = 0
+        0x00, // temperature_present = 0
+        0x00, // stream = 0
     };
 
     var req = try decodeSendRequest(&bytes, testing.allocator);
@@ -320,30 +398,20 @@ test "decodeSendRequest: minimal request (model + 1 user message, no opts, no st
 
 test "decodeSendRequest: full request (model, multi-turn, max_tokens, temperature, stream)" {
     const bytes = [_]u8{
-        // model_len = 11, "gpt-4o-mini"
-        0x0B, 0x00, 0x00, 0x00,
+        0x0B, 0x00, 0x00, 0x00, // model_len = 11
         'g',  'p',  't',  '-',
         '4',  'o',  '-',  'm',
         'i',  'n',  'i',
-        // message_count = 2
-         0x02,
-        0x00, 0x00, 0x00,
-        // role=0 (system), text_len=2, "be"
-        0x00,
-        0x02, 0x00, 0x00, 0x00,
-        'b',  'e',
-        // role=1 (user), text_len=2, "hi"
-         0x01, 0x02,
-        0x00, 0x00, 0x00, 'h',
-        'i',
-        // max_tokens_present = 1, max_tokens = 32
-         0x01, 0x20, 0x00,
-        0x00, 0x00,
-        // temperature_present = 1, temperature = 0.0 (f32)
-        0x01, 0x00,
-        0x00, 0x00, 0x00,
-        // stream = 1
-        0x01,
+        0x02, 0x00, 0x00, 0x00, // message_count = 2
+        0x00, // role = 0 (system)
+        0x02, 0x00, 0x00, 0x00, 'b', 'e', // text_len = 2, "be"
+        0x00, 0x00, 0x00, 0x00, // tool_call_count = 0
+        0x01, // role = 1 (user)
+        0x02, 0x00, 0x00, 0x00, 'h', 'i', // text_len = 2, "hi"
+        0x00, 0x00, 0x00, 0x00, // tool_call_count = 0
+        0x01, 0x20, 0x00, 0x00, 0x00, // max_tokens_present = 1, = 32
+        0x01, 0x00, 0x00, 0x00, 0x00, // temperature_present = 1, = 0.0f
+        0x01, // stream = 1
     };
 
     var req = try decodeSendRequest(&bytes, testing.allocator);
@@ -446,7 +514,18 @@ const CorpusEventsCase = struct {
     events: []const CorpusEventJson,
     hex: []const u8,
 };
-const CorpusMsg = struct { role: u8, text: []const u8 };
+const CorpusTCResult = struct { ok: bool, content: []const u8 };
+const CorpusTC = struct {
+    id: []const u8,
+    name: []const u8,
+    args: []const u8,
+    result: ?CorpusTCResult = null,
+};
+const CorpusMsg = struct {
+    role: u8,
+    text: []const u8,
+    toolCalls: []const CorpusTC = &.{},
+};
 const CorpusSendReqCase = struct {
     name: []const u8,
     hex: []const u8,
@@ -518,8 +597,31 @@ test "conformance corpus matches codec implementation" {
         try testing.expectEqualStrings(c.value.model, req.model);
         try testing.expectEqual(c.value.messages.len, req.messages.len);
         for (c.value.messages, 0..) |em, i| {
-            try testing.expectEqual(try roleFromByte(em.role), req.messages[i].role);
-            try testing.expectEqualStrings(em.text, req.messages[i].text);
+            const rm = req.messages[i];
+            try testing.expectEqual(try roleFromByte(em.role), rm.role);
+            try testing.expectEqualStrings(em.text, rm.text);
+            try testing.expectEqual(em.toolCalls.len, rm.tool_calls.len);
+            for (em.toolCalls, 0..) |etc, j| {
+                const rtc = rm.tool_calls[j];
+                try testing.expectEqualStrings(etc.id, rtc.id);
+                try testing.expectEqualStrings(etc.name, rtc.name);
+                try testing.expectEqualStrings(etc.args, rtc.args);
+                if (etc.result) |er| {
+                    try testing.expect(rtc.result != null);
+                    switch (rtc.result.?) {
+                        .ok => |s| {
+                            try testing.expect(er.ok);
+                            try testing.expectEqualStrings(er.content, s);
+                        },
+                        .err => |s| {
+                            try testing.expect(!er.ok);
+                            try testing.expectEqualStrings(er.content, s);
+                        },
+                    }
+                } else {
+                    try testing.expect(rtc.result == null);
+                }
+            }
         }
         try testing.expectEqual(c.value.maxTokens, req.max_tokens);
         try testing.expectEqual(c.value.temperature, req.temperature);

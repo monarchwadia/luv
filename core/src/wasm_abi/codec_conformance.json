@@ -22,10 +22,10 @@
   "decodeSendRequest": [
     {
       "name": "minimal",
-      "hex": "010000006d0100000001020000006869000000",
+      "hex": "010000006d010000000102000000686900000000000000",
       "value": {
         "model": "m",
-        "messages": [ { "role": 1, "text": "hi" } ],
+        "messages": [ { "role": 1, "text": "hi", "toolCalls": [] } ],
         "maxTokens": null,
         "temperature": null,
         "stream": false
@@ -33,13 +33,32 @@
     },
     {
       "name": "full",
-      "hex": "0b0000006770742d346f2d6d696e690200000000020000006265010200000068690120000000010000000001",
+      "hex": "0b0000006770742d346f2d6d696e6902000000000200000062650000000001020000006869000000000120000000010000000001",
       "value": {
         "model": "gpt-4o-mini",
-        "messages": [ { "role": 0, "text": "be" }, { "role": 1, "text": "hi" } ],
+        "messages": [ { "role": 0, "text": "be", "toolCalls": [] }, { "role": 1, "text": "hi", "toolCalls": [] } ],
         "maxTokens": 32,
         "temperature": 0.0,
         "stream": true
+      }
+    },
+    {
+      "name": "tool_call_with_result",
+      "hex": "010000006d010000000200000000010000000200000063310100000066070000007b2278223a317d0101020000006f6b000000",
+      "value": {
+        "model": "m",
+        "messages": [
+          {
+            "role": 2,
+            "text": "",
+            "toolCalls": [
+              { "id": "c1", "name": "f", "args": "{\"x\":1}", "result": { "ok": true, "content": "ok" } }
+            ]
+          }
+        ],
+        "maxTokens": null,
+        "temperature": null,
+        "stream": false
       }
     }
   ]
