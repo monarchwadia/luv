@@ -74,14 +74,10 @@ const requestCases: { name: string; opts: ToOpenAIOptions }[] = [
   },
 ];
 
-// Known divergence (tracked, pending reconciliation): codec `temperature`
-// is f32-lossy vs the TS port's f64. Flip back to test() once codec
-// temperature is widened to f64. Every other request case matches.
-const TEMP_F32_DIVERGENCE = new Set(["system+user multi-turn + opts"]);
-
+// Reconciled: codec `temperature` widened f32 -> f64; all request cases
+// now match the TS port exactly.
 for (const c of requestCases) {
-  const runner = TEMP_F32_DIVERGENCE.has(c.name) ? test.failing : test;
-  runner(`toOpenAI parity: ${c.name}`, () => {
+  test(`toOpenAI parity: ${c.name}`, () => {
     expect(buildOpenAIRequest(c.opts)).toEqual(toOpenAI(c.opts));
   });
 }

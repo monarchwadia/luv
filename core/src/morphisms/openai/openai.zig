@@ -26,7 +26,7 @@ const luv = @import("../luv/luv.zig");
 pub const Options = struct {
     model: []const u8,
     max_tokens: ?u32 = null,
-    temperature: ?f32 = null,
+    temperature: ?f64 = null,
     stream: bool = false,
     tools: []const luv.Tool = &.{},
 };
@@ -65,7 +65,7 @@ pub const Request = struct {
     model: []const u8,
     messages: []const RequestMessage,
     max_tokens: ?u32 = null,
-    temperature: ?f32 = null,
+    temperature: ?f64 = null,
     stream: ?bool = null,
     tools: ?[]const ToolDef = null,
 };

@@ -77,7 +77,7 @@ pub const SendRequestInput = struct {
     model: []const u8,
     messages: []const WireMessage,
     max_tokens: ?u32,
-    temperature: ?f32,
+    temperature: ?f64,
     stream: bool,
     tools: []const WireTool = &.{},
 
@@ -174,10 +174,10 @@ const Reader = struct {
         return v;
     }
 
-    fn readF32(self: *Reader) DecodeError!f32 {
-        try self.need(4);
-        const v = @as(f32, @bitCast(std.mem.readInt(u32, self.bytes[self.pos..][0..4], .little)));
-        self.pos += 4;
+    fn readF64(self: *Reader) DecodeError!f64 {
+        try self.need(8);
+        const v = @as(f64, @bitCast(std.mem.readInt(u64, self.bytes[self.pos..][0..8], .little)));
+        self.pos += 8;
         return v;
     }
 
@@ -264,7 +264,7 @@ pub fn decodeSendRequest(bytes: []const u8, alloc: std.mem.Allocator) DecodeErro
     const max_tokens: ?u32 = if (max_tokens_present == 0) null else try r.readU32();
 
     const temperature_present = try r.readU8();
-    const temperature: ?f32 = if (temperature_present == 0) null else try r.readF32();
+    const temperature: ?f64 = if (temperature_present == 0) null else try r.readF64();
 
     const stream_byte = try r.readU8();
 
@@ -308,7 +308,7 @@ pub fn encodeSendRequest(req: SendRequestInput, alloc: std.mem.Allocator) std.me
         }
     }
     total += 1 + (if (req.max_tokens != null) @as(usize, 4) else 0);
-    total += 1 + (if (req.temperature != null) @as(usize, 4) else 0);
+    total += 1 + (if (req.temperature != null) @as(usize, 8) else 0);
     total += 1;
     total += 4;
     for (req.tools) |t| total += 4 + t.name.len + 4 + t.description.len + 4 + t.input_schema.len;
@@ -379,8 +379,8 @@ pub fn encodeSendRequest(req: SendRequestInput, alloc: std.mem.Allocator) std.me
     if (req.temperature) |tp| {
         out[pos] = 1;
         pos += 1;
-        std.mem.writeInt(u32, out[pos..][0..4], @bitCast(tp), .little);
-        pos += 4;
+        std.mem.writeInt(u64, out[pos..][0..8], @bitCast(tp), .little);
+        pos += 8;
     } else {
         out[pos] = 0;
         pos += 1;
@@ -513,7 +513,7 @@ test "decodeSendRequest: minimal request (model + 1 user message, no opts, no st
     try testing.expectEqual(luv.Role.user, req.messages[0].role);
     try testing.expectEqualStrings("hi", req.messages[0].text);
     try testing.expectEqual(@as(?u32, null), req.max_tokens);
-    try testing.expectEqual(@as(?f32, null), req.temperature);
+    try testing.expectEqual(@as(?f64, null), req.temperature);
     try testing.expectEqual(false, req.stream);
 }
 
@@ -531,7 +531,7 @@ test "decodeSendRequest: full request (model, multi-turn, max_tokens, temperatur
         0x02, 0x00, 0x00, 0x00, 'h', 'i', // text_len = 2, "hi"
         0x00, 0x00, 0x00, 0x00, // tool_call_count = 0
         0x01, 0x20, 0x00, 0x00, 0x00, // max_tokens_present = 1, = 32
-        0x01, 0x00, 0x00, 0x00, 0x00, // temperature_present = 1, = 0.0f
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // temperature_present = 1, f64 0.0
         0x01, // stream = 1
         0x00, 0x00, 0x00, 0x00, // tool_count = 0
     };
@@ -546,7 +546,7 @@ test "decodeSendRequest: full request (model, multi-turn, max_tokens, temperatur
     try testing.expectEqual(luv.Role.user, req.messages[1].role);
     try testing.expectEqualStrings("hi", req.messages[1].text);
     try testing.expectEqual(@as(?u32, 32), req.max_tokens);
-    try testing.expectEqual(@as(?f32, 0.0), req.temperature);
+    try testing.expectEqual(@as(?f64, 0.0), req.temperature);
     try testing.expectEqual(true, req.stream);
 }
 
@@ -669,7 +669,7 @@ const CorpusSendReqCase = struct {
         model: []const u8,
         messages: []const CorpusMsg,
         maxTokens: ?u32 = null,
-        temperature: ?f32 = null,
+        temperature: ?f64 = null,
         stream: bool,
         tools: []const CorpusTool = &.{},
     },

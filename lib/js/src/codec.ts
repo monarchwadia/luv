@@ -72,10 +72,10 @@ class Writer {
   u32(v: number): void {
     this.buf.push(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff);
   }
-  f32(v: number): void {
-    const b = new Uint8Array(4);
-    new DataView(b.buffer).setFloat32(0, v, true);
-    this.buf.push(b[0]!, b[1]!, b[2]!, b[3]!);
+  f64(v: number): void {
+    const b = new Uint8Array(8);
+    new DataView(b.buffer).setFloat64(0, v, true);
+    for (const x of b) this.buf.push(x);
   }
   bytes(a: Uint8Array): void {
     for (const x of a) this.buf.push(x);
@@ -147,7 +147,7 @@ export function encodeSendRequest(req: CodecSendRequest): Uint8Array {
     w.u8(0);
   } else {
     w.u8(1);
-    w.f32(req.temperature);
+    w.f64(req.temperature);
   }
   w.u8(req.stream ? 1 : 0);
 
