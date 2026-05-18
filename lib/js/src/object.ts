@@ -7,8 +7,8 @@ import { classifyError } from "./errors.ts";
 import { fromOpenAI, toOpenAI, type OpenAIWireResponse } from "./morphism.ts";
 import type { SendInternalOptions } from "./send.ts";
 import type { InferSchema } from "./tool.ts";
-import { parseArguments, ToolArgsError } from "./tool_args.ts";
 import type { Conversation, JSONSchema, StopReason, Usage } from "./types.ts";
+import { extractObject } from "./wasm/object_bridge.ts";
 
 const utf8Decoder = new TextDecoder("utf-8", { fatal: false });
 
@@ -110,24 +110,11 @@ export async function generateObject<const S>(
     throw new GenerateObjectError("expected assistant reply");
   }
 
-  let raw: unknown;
-  try {
-    raw = JSON.parse(reply.message.text);
-  } catch {
-    throw new GenerateObjectError(
-      `model returned non-JSON content: ${reply.message.text.slice(0, 200)}`,
-    );
-  }
-
-  // Validate against the schema (re-using parseArguments' validator).
-  try {
-    parseArguments({ id: "", name: "", arguments: raw }, opts.schema);
-  } catch (err) {
-    if (err instanceof ToolArgsError) {
-      throw new GenerateObjectError(`schema validation failed: ${err.message}`);
-    }
-    throw err;
-  }
+  // Single-sourced in Zig: the pure parse-as-JSON + schema-validate step now
+  // delegates to the wasm core via wasm/object_bridge.ts. The bridge throws
+  // the same GenerateObjectError (non-JSON / schema-failure) the deleted TS
+  // port threw — proven byte/behavior-equivalent by test/object.diff.test.ts.
+  const raw = extractObject(reply.message.text, opts.schema);
 
   return {
     object: raw as InferSchema<S>,

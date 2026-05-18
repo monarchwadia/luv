@@ -5,6 +5,7 @@
 
 import type { InferSchema } from "./tool.ts";
 import type { ToolCall } from "./types.ts";
+import { validateToolArgs } from "./wasm/tool_args_bridge.ts";
 
 export class ToolArgsError extends Error {
   readonly path: string;
@@ -19,6 +20,15 @@ export class ToolArgsError extends Error {
  *
  * Without a schema, returns `call.arguments` cast to `T` (no runtime check).
  * Throws `ToolArgsError` when the runtime shape doesn't match the schema.
+ *
+ * Single-sourced in Zig: the shape walker now delegates to the wasm core over
+ * the codec boundary (see wasm/tool_args_bridge.ts). The ~95-line TS port
+ * (`validate` / `typeOf`) was deleted after the differential test proved
+ * behavior equivalence. Signatures and the `ToolArgsError` contract are
+ * unchanged — consumers and their tests are untouched. The runtime dep is
+ * one-directional (tool_args -> bridge; the bridge's `ToolArgsError` import is
+ * a value re-export of this class, so the thrown error is `instanceof`-true
+ * here with no cycle hazard at call time).
  */
 export function parseArguments<S>(
   call: ToolCall,
@@ -27,101 +37,35 @@ export function parseArguments<S>(
 export function parseArguments<T = unknown>(call: ToolCall): T;
 export function parseArguments(call: ToolCall, schema?: unknown): unknown {
   if (!schema) return call.arguments;
-  validate(call.arguments, schema, "");
-  return call.arguments;
-}
-
-function validate(value: unknown, schema: unknown, path: string): void {
-  if (typeof schema !== "object" || schema === null) return;
-  const s = schema as Record<string, unknown>;
-
-  // const
-  if ("const" in s) {
-    if (value !== s["const"]) {
-      throw new ToolArgsError(path, `expected const ${JSON.stringify(s["const"])}, got ${JSON.stringify(value)}`);
-    }
-    return;
-  }
-
-  // enum
-  if (Array.isArray(s["enum"])) {
-    if (!s["enum"].includes(value as never)) {
-      throw new ToolArgsError(
-        path,
-        `value ${JSON.stringify(value)} not in enum ${JSON.stringify(s["enum"])}`,
-      );
-    }
-    return;
-  }
-
-  switch (s["type"]) {
-    case "string":
-      if (typeof value !== "string") {
-        throw new ToolArgsError(path, `expected string, got ${typeOf(value)}`);
-      }
-      return;
-    case "number":
-      if (typeof value !== "number") {
-        throw new ToolArgsError(path, `expected number, got ${typeOf(value)}`);
-      }
-      return;
-    case "integer":
-      if (typeof value !== "number" || !Number.isInteger(value)) {
-        throw new ToolArgsError(path, `expected integer, got ${typeOf(value)}`);
-      }
-      return;
-    case "boolean":
-      if (typeof value !== "boolean") {
-        throw new ToolArgsError(path, `expected boolean, got ${typeOf(value)}`);
-      }
-      return;
-    case "null":
-      if (value !== null) {
-        throw new ToolArgsError(path, `expected null, got ${typeOf(value)}`);
-      }
-      return;
-    case "array": {
-      if (!Array.isArray(value)) {
-        throw new ToolArgsError(path, `expected array, got ${typeOf(value)}`);
-      }
-      const items = s["items"];
-      if (items) {
-        for (let i = 0; i < value.length; i++) {
-          validate(value[i], items, `${path}[${i}]`);
+  // JSON-boundary guard: JSON.stringify silently drops `undefined`-valued
+  // keys, so the wasm validator can't distinguish "present but undefined"
+  // (a type error in the TS contract) from "absent". A present-`undefined`
+  // required property is not JSON-representable and never occurs via the real
+  // model->JSON path; reproduce the TS port's type-mismatch error here so the
+  // contract is byte-stable. Everything else is single-sourced in Zig.
+  if (typeof schema === "object" && schema !== null && !Array.isArray(schema)) {
+    const s = schema as {
+      required?: unknown;
+      properties?: Record<string, { type?: unknown }>;
+    };
+    const args = call.arguments;
+    if (
+      Array.isArray(s.required) &&
+      typeof args === "object" &&
+      args !== null &&
+      !Array.isArray(args)
+    ) {
+      const obj = args as Record<string, unknown>;
+      for (const key of s.required as unknown[]) {
+        if (typeof key === "string" && key in obj && obj[key] === undefined) {
+          const t = s.properties?.[key]?.type;
+          throw new ToolArgsError(
+            key,
+            `expected ${typeof t === "string" ? t : "value"}, got undefined`,
+          );
         }
       }
-      return;
     }
-    case "object": {
-      if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        throw new ToolArgsError(path, `expected object, got ${typeOf(value)}`);
-      }
-      const obj = value as Record<string, unknown>;
-      const required = Array.isArray(s["required"]) ? (s["required"] as string[]) : [];
-      const properties =
-        typeof s["properties"] === "object" && s["properties"] !== null
-          ? (s["properties"] as Record<string, unknown>)
-          : {};
-      for (const key of required) {
-        if (!(key in obj)) {
-          throw new ToolArgsError(path, `missing required field "${key}"`);
-        }
-      }
-      for (const [key, sub] of Object.entries(properties)) {
-        if (key in obj) {
-          validate(obj[key], sub, path ? `${path}.${key}` : key);
-        }
-      }
-      return;
-    }
-    default:
-      // Unknown / unspecified type — accept anything.
-      return;
   }
-}
-
-function typeOf(v: unknown): string {
-  if (v === null) return "null";
-  if (Array.isArray(v)) return "array";
-  return typeof v;
+  return validateToolArgs(call.arguments, schema);
 }

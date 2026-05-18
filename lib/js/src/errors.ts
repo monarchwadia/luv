@@ -1,6 +1,14 @@
 // Structured HTTP errors for upstream-LLM responses. `classifyError` maps an
 // HTTP status + response body + Retry-After header to the most specific
 // subclass. Callers can `instanceof` these to handle each cleanly.
+//
+// The classification DECISION is single-sourced in the Zig/wasm core (see
+// wasm/errors_bridge.ts); the error CLASSES below are host objects and stay
+// in TS. The bridge imports those classes back — an ES-module cycle that is
+// safe because `classifyErrorViaWasm` is only *called* at runtime, by which
+// point every class binding is initialized.
+
+import { classifyErrorViaWasm } from "./wasm/errors_bridge.ts";
 
 /** Base class for any upstream HTTP failure from a provider.
  *
@@ -86,10 +94,6 @@ function truncate(s: string, n = 200): string {
   return s.length <= n ? s : s.slice(0, n) + "…";
 }
 
-interface ErrorBodyShape {
-  error?: { message?: string; type?: string; code?: string };
-}
-
 /** Map an HTTP failure (status + body + retry-after header) into the most
  *  specific {@link HttpError} subclass. Used internally by `send` /
  *  `sendStream`; exposed so consumers can call it from custom transport code.
@@ -100,53 +104,19 @@ interface ErrorBodyShape {
  *  - 400 + content_filter_error    → `ContentFilterError`
  *  - 5xx              → `ServiceUnavailableError`
  *  - anything else    → `HttpError`
+ *
+ *  Single-sourced in Zig: the classification *decision* (status + body +
+ *  Retry-After + now → kind/retryAfterMs) is made in the wasm core via
+ *  `wasm/errors_bridge.ts`; the error CLASSES above stay host objects and
+ *  are constructed here. The ~50-line TS port (status taxonomy +
+ *  `parseRetryAfter`) was deleted after the differential test
+ *  (`test/errors.diff.test.ts`) proved behavior equivalence. Signature is
+ *  unchanged — consumers and their tests are untouched.
  */
 export function classifyError(
   status: number,
   body: string,
   retryAfterHeader: string | null,
 ): HttpError {
-  let parsed: ErrorBodyShape | undefined;
-  if (body) {
-    try {
-      parsed = JSON.parse(body) as ErrorBodyShape;
-    } catch {
-      // body wasn't JSON; fall through with parsed=undefined
-    }
-  }
-
-  const code = parsed?.error?.code;
-  const type = parsed?.error?.type;
-
-  if (status === 401 || status === 403) {
-    return new AuthError(status, body);
-  }
-  if (status === 429) {
-    return new RateLimitError(status, body, parseRetryAfter(retryAfterHeader));
-  }
-  if (status === 400 && code === "context_length_exceeded") {
-    return new ContextWindowExceededError(status, body);
-  }
-  if (status === 400 && (type === "content_filter_error" || code === "content_filter")) {
-    return new ContentFilterError(status, body);
-  }
-  if (status >= 500 && status < 600) {
-    return new ServiceUnavailableError(status, body);
-  }
-  return new HttpError(status, body);
-}
-
-/** Parse a Retry-After header into milliseconds. Supports numeric seconds and HTTP-date. */
-function parseRetryAfter(value: string | null): number | undefined {
-  if (!value) return undefined;
-  const trimmed = value.trim();
-  if (/^\d+$/.test(trimmed)) {
-    return parseInt(trimmed, 10) * 1000;
-  }
-  const dateMs = Date.parse(trimmed);
-  if (!Number.isNaN(dateMs)) {
-    const delta = dateMs - Date.now();
-    return delta > 0 ? delta : 0;
-  }
-  return undefined;
+  return classifyErrorViaWasm(status, body, retryAfterHeader);
 }
