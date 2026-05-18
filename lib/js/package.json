@@ -21,6 +21,7 @@
   "scripts": {
     "build:js": "esbuild src/index.ts src/middleware/index.ts --bundle --splitting --format=esm --outdir=dist --outbase=src --target=chrome90,edge90,firefox88,safari14.1,ios14.5,node18 --packages=external --external:node:*",
     "build:types": "tsc -p tsconfig.build.json",
+    "build:embed": "bun scripts/embed-wasm.ts",
     "build:clean": "rm -rf dist",
     "build": "bun run build:clean && bun run build:js && bun run build:types",
     "test": "bun test",
