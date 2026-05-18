@@ -421,6 +421,124 @@ export fn luv_extract_object(
     return emitStatusMsg(out_ptr_out, out_len_out, 0, "");
 }
 
+const tool_calls = @import("../morphisms/luv/tool_calls.zig");
+
+fn wireToLuvMessages(wmsgs: []const codec.WireMessage, a: std.mem.Allocator) ![]luv.Message {
+    const lmsgs = try a.alloc(luv.Message, wmsgs.len);
+    for (wmsgs, 0..) |wm, i| {
+        const calls = try a.alloc(luv.ToolCall, wm.tool_calls.len);
+        for (wm.tool_calls, 0..) |wc, j| {
+            const parsed = try std.json.parseFromSliceLeaky(std.json.Value, a, wc.args, .{});
+            const result: ?luv.ToolResult = if (wc.result) |rr| switch (rr) {
+                .ok => |s| luv.ToolResult{ .ok = s },
+                .err => |s| luv.ToolResult{ .err = s },
+            } else null;
+            calls[j] = .{ .id = wc.id, .name = wc.name, .arguments = parsed, .result = result };
+        }
+        lmsgs[i] = .{ .role = wm.role, .text = wm.text, .tool_calls = calls };
+    }
+    return lmsgs;
+}
+
+fn luvToWireMessages(lmsgs: []const luv.Message, a: std.mem.Allocator) ![]codec.WireMessage {
+    const wmsgs = try a.alloc(codec.WireMessage, lmsgs.len);
+    for (lmsgs, 0..) |lm, i| {
+        const calls = try a.alloc(codec.WireToolCall, lm.tool_calls.len);
+        for (lm.tool_calls, 0..) |c, j| {
+            const args = try std.json.Stringify.valueAlloc(a, c.arguments, .{});
+            const res: ?codec.WireToolResult = if (c.result) |rr| switch (rr) {
+                .ok => |s| codec.WireToolResult{ .ok = s },
+                .err => |s| codec.WireToolResult{ .err = s },
+            } else null;
+            calls[j] = .{ .id = c.id, .name = c.name, .args = args, .result = res };
+        }
+        wmsgs[i] = .{ .role = lm.role, .text = lm.text, .tool_calls = calls };
+    }
+    return wmsgs;
+}
+
+/// In: conversation wire. Out: u32 count; per call u32 id_len;id; u32
+/// name_len;name; u32 args_len; args(JSON).
+export fn luv_pending_tool_calls(
+    in_ptr: usize,
+    in_len: usize,
+    out_ptr_out: usize,
+    out_len_out: usize,
+) i32 {
+    var conv = codec.decodeConversation(sliceFromAbi(in_ptr, in_len), allocator) catch return -2;
+    defer conv.deinit();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const lmsgs = wireToLuvMessages(conv.messages, a) catch return -1;
+    const pending = tool_calls.pendingToolCalls(lmsgs, a) catch return -1;
+
+    var total: usize = 4;
+    var args_list = a.alloc([]const u8, pending.len) catch return -1;
+    for (pending, 0..) |c, i| {
+        const s = std.json.Stringify.valueAlloc(a, c.arguments, .{}) catch return -1;
+        args_list[i] = s;
+        total += 4 + c.id.len + 4 + c.name.len + 4 + s.len;
+    }
+    const buf = allocator.alloc(u8, total) catch return -1;
+    var pos: usize = 0;
+    std.mem.writeInt(u32, buf[0..4], @intCast(pending.len), .little);
+    pos = 4;
+    for (pending, 0..) |c, i| {
+        inline for (.{ c.id, c.name, args_list[i] }) |field| {
+            std.mem.writeInt(u32, buf[pos..][0..4], @intCast(field.len), .little);
+            pos += 4;
+            @memcpy(buf[pos .. pos + field.len], field);
+            pos += field.len;
+        }
+    }
+    writeOutPtrLen(out_ptr_out, out_len_out, @intFromPtr(buf.ptr), @intCast(buf.len));
+    return 0;
+}
+
+/// In: u32 conv_len; conv_wire; u32 call_id_len; call_id; u8 ok; u32
+/// content_len; content. Out: new conversation wire.
+export fn luv_respond_tool_call(
+    in_ptr: usize,
+    in_len: usize,
+    out_ptr_out: usize,
+    out_len_out: usize,
+) i32 {
+    const bytes = sliceFromAbi(in_ptr, in_len);
+    if (bytes.len < 4) return -2;
+    const conv_len = std.mem.readInt(u32, bytes[0..4], .little);
+    var pos: usize = 4;
+    if (pos + conv_len + 4 > bytes.len) return -2;
+    const conv_bytes = bytes[pos .. pos + conv_len];
+    pos += conv_len;
+    const id_len = std.mem.readInt(u32, bytes[pos..][0..4], .little);
+    pos += 4;
+    if (pos + id_len + 1 + 4 > bytes.len) return -2;
+    const call_id = bytes[pos .. pos + id_len];
+    pos += id_len;
+    const ok = bytes[pos];
+    pos += 1;
+    const content_len = std.mem.readInt(u32, bytes[pos..][0..4], .little);
+    pos += 4;
+    if (pos + content_len > bytes.len) return -2;
+    const content = bytes[pos .. pos + content_len];
+
+    var conv = codec.decodeConversation(conv_bytes, allocator) catch return -2;
+    defer conv.deinit();
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const lmsgs = wireToLuvMessages(conv.messages, a) catch return -1;
+    const result: luv.ToolResult = if (ok != 0) .{ .ok = content } else .{ .err = content };
+    const new_conv = tool_calls.respondToToolCall(lmsgs, call_id, result, a) catch return -1;
+    const wmsgs = luvToWireMessages(new_conv, a) catch return -1;
+    const encoded = codec.encodeConversation(wmsgs, allocator) catch return -1;
+    writeOutPtrLen(out_ptr_out, out_len_out, @intFromPtr(encoded.ptr), @intCast(encoded.len));
+    return 0;
+}
+
 /// Allocate a streaming Decoder. Returns its address (treat as opaque handle).
 export fn luv_decoder_new() usize {
     const dec_ptr = allocator.create(stream_morphism.Decoder) catch return 0;
@@ -730,4 +848,54 @@ test "luv_extract_object: ok and non-json" {
     const r2 = callRaw(&luv_extract_object, b2.items);
     try testing.expectEqual(@as(u8, 1), r2.out[0]); // non-json
     luv_free(r2.ptr, r2.len);
+}
+
+test "luv_pending_tool_calls + luv_respond_tool_call round-trip" {
+    // Conversation: user, assistant w/ one pending tool call c1.
+    const calls = [_]codec.WireToolCall{
+        .{ .id = "c1", .name = "wx", .args = "{\"city\":\"T\"}", .result = null },
+    };
+    const msgs = [_]codec.WireMessage{
+        .{ .role = .user, .text = "weather?", .tool_calls = &.{} },
+        .{ .role = .assistant, .text = "", .tool_calls = &calls },
+    };
+    const conv = try codec.encodeConversation(&msgs, testing.allocator);
+    defer testing.allocator.free(conv);
+
+    // pending → exactly c1
+    const p = callRaw(&luv_pending_tool_calls, conv);
+    try testing.expectEqual(@as(i32, 0), p.status);
+    try testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, p.out[0..4], .little));
+    const id_len = std.mem.readInt(u32, p.out[4..8], .little);
+    try testing.expectEqualStrings("c1", p.out[8 .. 8 + id_len]);
+    luv_free(p.ptr, p.len);
+
+    // respond: build [u32 conv_len; conv; u32 id_len; id; u8 ok; u32 clen; content]
+    var in: std.ArrayList(u8) = .empty;
+    defer in.deinit(testing.allocator);
+    try in.appendSlice(testing.allocator, &@as([4]u8, @bitCast(@as(u32, @intCast(conv.len)))));
+    try in.appendSlice(testing.allocator, conv);
+    try in.appendSlice(testing.allocator, &@as([4]u8, @bitCast(@as(u32, 2))));
+    try in.appendSlice(testing.allocator, "c1");
+    try in.append(testing.allocator, 1); // ok
+    const content = "{\"t\":18}";
+    try in.appendSlice(testing.allocator, &@as([4]u8, @bitCast(@as(u32, @intCast(content.len)))));
+    try in.appendSlice(testing.allocator, content);
+
+    const rr = callRaw(&luv_respond_tool_call, in.items);
+    try testing.expectEqual(@as(i32, 0), rr.status);
+    const new_conv_bytes = try testing.allocator.dupe(u8, rr.out);
+    defer testing.allocator.free(new_conv_bytes);
+    luv_free(rr.ptr, rr.len);
+
+    var nc = try codec.decodeConversation(new_conv_bytes, testing.allocator);
+    defer nc.deinit();
+    try testing.expectEqual(@as(usize, 2), nc.messages.len);
+    const a_msg = nc.messages[1];
+    try testing.expectEqual(@as(usize, 1), a_msg.tool_calls.len);
+    try testing.expect(a_msg.tool_calls[0].result != null);
+    switch (a_msg.tool_calls[0].result.?) {
+        .ok => |s| try testing.expectEqualStrings("{\"t\":18}", s),
+        .err => try testing.expect(false),
+    }
 }

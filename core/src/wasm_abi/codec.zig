@@ -478,6 +478,80 @@ pub fn encodeEvents(events: []const luv_stream.Event, alloc: std.mem.Allocator) 
 }
 
 // ---------------------------------------------------------------------------
+// Standalone conversation codec (for the tool_calls brick). Wire:
+//   u32 msg_count; WireMessage[]  (same per-message shape as SendRequest).
+
+pub const Conversation = struct {
+    arena: std.heap.ArenaAllocator,
+    messages: []const WireMessage,
+
+    pub fn deinit(self: *Conversation) void {
+        self.arena.deinit();
+        self.* = undefined;
+    }
+};
+
+fn readToolCalls(r: *Reader, a: std.mem.Allocator) DecodeError![]WireToolCall {
+    const tc_count = try r.readU32();
+    const calls = try a.alloc(WireToolCall, tc_count);
+    var j: usize = 0;
+    while (j < tc_count) : (j += 1) {
+        const id = try r.readSliceDup(try r.readU32(), a);
+        const name = try r.readSliceDup(try r.readU32(), a);
+        const args = try r.readSliceDup(try r.readU32(), a);
+        var result: ?WireToolResult = null;
+        if (try r.readU8() != 0) {
+            const ok = try r.readU8();
+            const content = try r.readSliceDup(try r.readU32(), a);
+            result = if (ok != 0) .{ .ok = content } else .{ .err = content };
+        }
+        calls[j] = .{ .id = id, .name = name, .args = args, .result = result };
+    }
+    return calls;
+}
+
+pub fn decodeConversation(bytes: []const u8, alloc: std.mem.Allocator) DecodeError!Conversation {
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    errdefer arena.deinit();
+    const a = arena.allocator();
+    var r: Reader = .{ .bytes = bytes };
+    const count = try r.readU32();
+    const messages = try a.alloc(WireMessage, count);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        const role = try roleFromByte(try r.readU8());
+        const text = try r.readSliceDup(try r.readU32(), a);
+        messages[i] = .{ .role = role, .text = text, .tool_calls = try readToolCalls(&r, a) };
+    }
+    return .{ .arena = arena, .messages = messages };
+}
+
+fn messageSize(m: WireMessage) usize {
+    return 1 + 4 + m.text.len + toolCallsSize(m.tool_calls);
+}
+
+pub fn encodeConversation(messages: []const WireMessage, alloc: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
+    var total: usize = 4;
+    for (messages) |m| total += messageSize(m);
+    const out = try alloc.alloc(u8, total);
+    errdefer alloc.free(out);
+    var pos: usize = 0;
+    std.mem.writeInt(u32, out[0..4], @intCast(messages.len), .little);
+    pos = 4;
+    for (messages) |m| {
+        out[pos] = roleToByte(m.role);
+        pos += 1;
+        std.mem.writeInt(u32, out[pos..][0..4], @intCast(m.text.len), .little);
+        pos += 4;
+        @memcpy(out[pos .. pos + m.text.len], m.text);
+        pos += m.text.len;
+        writeToolCalls(out, &pos, m.tool_calls);
+    }
+    std.debug.assert(pos == total);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 
 const testing = std.testing;
