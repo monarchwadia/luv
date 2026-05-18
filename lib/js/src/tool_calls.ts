@@ -1,11 +1,19 @@
 // Pure functional utilities over the canonical luv Conversation for
-// inspecting and resolving tool calls. Mirrors core/src/morphisms/luv/tool_calls.zig.
+// inspecting and resolving tool calls.
 //
-// The conversation array is the only state. A tool call is "pending" iff its
-// `result` is undefined; resolving it produces a new conversation where that
-// call carries its result.
+// Single-sourced in Zig: the conversation walk/rebuild now delegates to the
+// wasm core over the codec boundary (see wasm/tool_calls_bridge.ts). The TS
+// port logic was deleted after the differential test proved equivalence.
+// Signatures are unchanged — consumers and their tests are untouched.
+// `pendingToolCalls`' optional `filter` is a host closure (cannot cross the
+// wasm boundary); the core returns all pending calls and the predicate is
+// applied in TS by the bridge.
 
-import type { Conversation, Message, ToolCall, ToolResult } from "./types.ts";
+import type { Conversation, ToolCall, ToolResult } from "./types.ts";
+import {
+  pendingToolCalls as bridgePending,
+  respondToToolCall as bridgeRespond,
+} from "./wasm/tool_calls_bridge.ts";
 
 /**
  * Find every tool call in the conversation whose `result` is undefined
@@ -17,36 +25,18 @@ export function pendingToolCalls(
   conv: Conversation,
   filter?: (c: ToolCall) => boolean,
 ): ToolCall[] {
-  const out: ToolCall[] = [];
-  for (const m of conv) {
-    if (m.role !== "assistant" || !m.toolCalls) continue;
-    for (const c of m.toolCalls) {
-      if (c.result !== undefined) continue;
-      if (filter && !filter(c)) continue;
-      out.push(c);
-    }
-  }
-  return out;
+  return bridgePending(conv, filter);
 }
 
 /**
  * Return a new conversation where the tool call with the given `callId`
- * has its `result` field set. If no call matches, the input is returned
- * with structural sharing (no mutation). Existing results are overwritten.
+ * has its `result` field set. If no call matches, a structurally-equal
+ * conversation is returned (no mutation). Existing results are overwritten.
  */
 export function respondToToolCall(
   conv: Conversation,
   callId: string,
   result: ToolResult,
 ): Conversation {
-  return conv.map((m: Message): Message => {
-    if (m.role !== "assistant" || !m.toolCalls) return m;
-    if (!m.toolCalls.some((c) => c.id === callId)) return m;
-    return {
-      ...m,
-      toolCalls: m.toolCalls.map((c) =>
-        c.id === callId ? { ...c, result } : c,
-      ),
-    };
-  });
+  return bridgeRespond(conv, callId, result);
 }

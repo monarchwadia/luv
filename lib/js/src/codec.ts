@@ -209,3 +209,65 @@ export function decodeEvents(bytes: Uint8Array): CodecEvent[] {
   }
   return events;
 }
+
+// Standalone conversation wire (for the tool_calls brick). Mirrors
+// core/src/wasm_abi/codec.zig decode/encodeConversation:
+//   u32 msg_count; per msg: u8 role; u32 text_len; text;
+//   u32 tc_count; per call: id,name,args (each u32-len+bytes);
+//   u8 result_present; if 1: u8 ok; content (u32-len+bytes)
+
+export function encodeConversation(
+  messages: readonly CodecMessage[],
+): Uint8Array {
+  const w = new Writer();
+  const str = (s: string): void => {
+    const b = utf8.encode(s);
+    w.u32(b.length);
+    w.bytes(b);
+  };
+  w.u32(messages.length);
+  for (const m of messages) {
+    w.u8(m.role);
+    str(m.text);
+    w.u32(m.toolCalls.length);
+    for (const c of m.toolCalls) {
+      str(c.id);
+      str(c.name);
+      str(c.args);
+      if (c.result == null) {
+        w.u8(0);
+      } else {
+        w.u8(1);
+        w.u8(c.result.ok ? 1 : 0);
+        str(c.result.content);
+      }
+    }
+  }
+  return w.out();
+}
+
+export function decodeConversation(bytes: Uint8Array): CodecMessage[] {
+  const r = new Reader(bytes);
+  const rstr = (): string => utf8d.decode(r.slice(r.u32()));
+  const count = r.u32();
+  const messages: CodecMessage[] = [];
+  for (let i = 0; i < count; i++) {
+    const role = r.u8();
+    const text = rstr();
+    const tcCount = r.u32();
+    const toolCalls: CodecToolCall[] = [];
+    for (let j = 0; j < tcCount; j++) {
+      const id = rstr();
+      const name = rstr();
+      const args = rstr();
+      let result: CodecToolResult | null = null;
+      if (r.u8() !== 0) {
+        const ok = r.u8() !== 0;
+        result = { ok, content: rstr() };
+      }
+      toolCalls.push({ id, name, args, result });
+    }
+    messages.push({ role, text, toolCalls });
+  }
+  return messages;
+}
