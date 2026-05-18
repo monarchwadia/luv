@@ -54,7 +54,8 @@ e2e:
 	cd test-tools && $(ZIG) build e2e
 
 # Regenerate the committed wasm-derived artifacts from current Zig:
-#   wasm -> embedded.generated.ts, luv.zig -> types.generated.ts.
+#   wasm -> embedded.generated.ts, luv.zig -> types.generated.ts,
+#   abi.zig -> wasm/loader.generated.ts (gen-ts depends on gen-sdk).
 gen:
 	cd core && $(ZIG) build wasm gen-ts
 	cd lib/js && $(BUN) run build:embed
@@ -63,6 +64,7 @@ gen:
 # (i.e. Zig changed but embed/gen-ts wasn't re-run + committed).
 gen-check: gen
 	@git diff --exit-code -- lib/js/src/wasm/embedded.generated.ts lib/js/src/types.generated.ts \
+	  lib/js/src/wasm/loader.generated.ts \
 	  || { echo "error: generated artifacts stale — run 'make gen' and commit"; exit 1; }
 
 # Comprehensive CI: format check, all unit tests (Zig core + JS Bun),

@@ -77,6 +77,26 @@ pub fn build(b: *std.Build) void {
     const gen_ts_step = b.step("gen-ts", "Generate lib/js/src/types.generated.ts from luv.zig");
     gen_ts_step.dependOn(&run_gen_ts.step);
 
+    // gen_sdk: abi.zig descriptor -> the mechanical wasm loader.
+    const abi_mod = b.createModule(.{
+        .root_source_file = b.path("src/wasm_abi/abi.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const gen_sdk = b.addExecutable(.{
+        .name = "gen_sdk",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/gen_sdk.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    gen_sdk.root_module.addImport("abi", abi_mod);
+    const run_gen_sdk = b.addRunArtifact(gen_sdk);
+    const gen_sdk_step = b.step("gen-sdk", "Generate lib/js/src/wasm/loader.generated.ts from abi.zig");
+    gen_sdk_step.dependOn(&run_gen_sdk.step);
+    gen_ts_step.dependOn(&run_gen_sdk.step);
+
     const fmt = b.addFmt(.{
         .paths = &.{ "src", "build.zig", "tools" },
         .check = true,
