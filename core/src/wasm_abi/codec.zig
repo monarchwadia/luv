@@ -171,6 +171,63 @@ pub fn decodeSendRequest(bytes: []const u8, alloc: std.mem.Allocator) DecodeErro
     };
 }
 
+/// Symmetric encoder for SendRequest (test/conformance oracle + lets the
+/// corpus be implementation-derived rather than hand-computed hex). Mirrors
+/// decodeSendRequest's wire exactly.
+pub fn encodeSendRequest(req: SendRequestInput, alloc: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
+    var total: usize = 4 + req.model.len + 4;
+    for (req.messages) |m| total += 1 + 4 + m.text.len;
+    total += 1 + (if (req.max_tokens != null) @as(usize, 4) else 0);
+    total += 1 + (if (req.temperature != null) @as(usize, 4) else 0);
+    total += 1;
+
+    const out = try alloc.alloc(u8, total);
+    errdefer alloc.free(out);
+    var pos: usize = 0;
+
+    std.mem.writeInt(u32, out[pos..][0..4], @intCast(req.model.len), .little);
+    pos += 4;
+    @memcpy(out[pos .. pos + req.model.len], req.model);
+    pos += req.model.len;
+
+    std.mem.writeInt(u32, out[pos..][0..4], @intCast(req.messages.len), .little);
+    pos += 4;
+    for (req.messages) |m| {
+        out[pos] = roleToByte(m.role);
+        pos += 1;
+        std.mem.writeInt(u32, out[pos..][0..4], @intCast(m.text.len), .little);
+        pos += 4;
+        @memcpy(out[pos .. pos + m.text.len], m.text);
+        pos += m.text.len;
+    }
+
+    if (req.max_tokens) |mt| {
+        out[pos] = 1;
+        pos += 1;
+        std.mem.writeInt(u32, out[pos..][0..4], mt, .little);
+        pos += 4;
+    } else {
+        out[pos] = 0;
+        pos += 1;
+    }
+
+    if (req.temperature) |tp| {
+        out[pos] = 1;
+        pos += 1;
+        std.mem.writeInt(u32, out[pos..][0..4], @bitCast(tp), .little);
+        pos += 4;
+    } else {
+        out[pos] = 0;
+        pos += 1;
+    }
+
+    out[pos] = if (req.stream) 1 else 0;
+    pos += 1;
+
+    std.debug.assert(pos == total);
+    return out;
+}
+
 pub fn encodeReply(reply: luv.Reply, alloc: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
     const total = 1 + 1 + 4 + reply.message.text.len;
     var out = try alloc.alloc(u8, total);
@@ -467,5 +524,15 @@ test "conformance corpus matches codec implementation" {
         try testing.expectEqual(c.value.maxTokens, req.max_tokens);
         try testing.expectEqual(c.value.temperature, req.temperature);
         try testing.expectEqual(c.value.stream, req.stream);
+
+        // Round-trip: re-encoding the decoded value must reproduce the exact
+        // corpus bytes — proves encode/decode are inverse and the corpus hex
+        // is implementation-faithful (not hand-derived drift).
+        const re = try encodeSendRequest(req, testing.allocator);
+        defer testing.allocator.free(re);
+        testing.expectEqualSlices(u8, in, re) catch |e| {
+            std.debug.print("encodeSendRequest round-trip '{s}' mismatch\n", .{c.name});
+            return e;
+        };
     }
 }
