@@ -98,7 +98,7 @@ pub const WireReply = struct {
     usage: ?luv.Usage = null,
 };
 
-fn toolCallsSize(calls: []const WireToolCall) usize {
+pub fn toolCallsSize(calls: []const WireToolCall) usize {
     var n: usize = 4;
     for (calls) |c| {
         n += 4 + c.id.len + 4 + c.name.len + 4 + c.args.len + 1;
@@ -110,7 +110,7 @@ fn toolCallsSize(calls: []const WireToolCall) usize {
     return n;
 }
 
-fn writeToolCalls(out: []u8, pos: *usize, calls: []const WireToolCall) void {
+pub fn writeToolCalls(out: []u8, pos: *usize, calls: []const WireToolCall) void {
     std.mem.writeInt(u32, out[pos.*..][0..4], @intCast(calls.len), .little);
     pos.* += 4;
     for (calls) |c| {
@@ -441,6 +441,29 @@ pub fn encodeReply(reply: WireReply, alloc: std.mem.Allocator) std.mem.Allocator
 
     std.debug.assert(pos == total);
     return out;
+}
+
+/// Symmetric decoder for Reply (feeds a provider reply INTO the agent
+/// machine). Strings duped with `a` (caller owns; an arena is ideal).
+pub fn decodeReply(bytes: []const u8, a: std.mem.Allocator) DecodeError!WireReply {
+    var r: Reader = .{ .bytes = bytes };
+    const role = try roleFromByte(try r.readU8());
+    const stop = stopReasonFromByte(try r.readU8());
+    const text = try r.readSliceDup(try r.readU32(), a);
+    const calls = try readToolCalls(&r, a);
+    var usage: ?luv.Usage = null;
+    if (try r.readU8() != 0) {
+        usage = .{
+            .prompt_tokens = try r.readU32(),
+            .completion_tokens = try r.readU32(),
+            .total_tokens = try r.readU32(),
+        };
+    }
+    return .{
+        .message = .{ .role = role, .text = text, .tool_calls = calls },
+        .stop_reason = stop,
+        .usage = usage,
+    };
 }
 
 pub fn encodeEvents(events: []const luv_stream.Event, alloc: std.mem.Allocator) std.mem.Allocator.Error![]u8 {

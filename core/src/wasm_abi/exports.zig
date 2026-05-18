@@ -540,6 +540,202 @@ export fn luv_respond_tool_call(
     return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Sans-IO agent loop (Stream E.2). Handle-based: the host drives
+// start -> poll -> feed_reply|feed_tools -> ... -> done over the codec
+// boundary. provider_send/tool_calls are emitted effects the host performs.
+
+const agent_machine = @import("../agent/agent_machine.zig");
+
+const AgentHandle = struct {
+    machine: agent_machine.AgentMachine,
+    req: codec.SendRequestInput, // keeps decoded conversation/tools alive
+    scratch: std.heap.ArenaAllocator, // luv projections + per-call temp
+};
+
+fn luvToolFromWire(wt: codec.WireTool, a: std.mem.Allocator) !luv.Tool {
+    const schema = try std.json.parseFromSliceLeaky(std.json.Value, a, wt.input_schema, .{});
+    return .{ .name = wt.name, .description = wt.description, .input_schema = schema };
+}
+
+/// In: u32 sendreq_len; sendreq(SendRequest wire); u32 max_iterations.
+/// Returns an opaque handle (0 = failure).
+export fn agent_start(in_ptr: usize, in_len: usize) usize {
+    const bytes = sliceFromAbi(in_ptr, in_len);
+    if (bytes.len < 4) return 0;
+    const sr_len = std.mem.readInt(u32, bytes[0..4], .little);
+    if (4 + sr_len + 4 > bytes.len) return 0;
+    const sr = bytes[4 .. 4 + sr_len];
+    const max_iter = std.mem.readInt(u32, bytes[4 + sr_len ..][0..4], .little);
+
+    const h = allocator.create(AgentHandle) catch return 0;
+    h.req = codec.decodeSendRequest(sr, allocator) catch {
+        allocator.destroy(h);
+        return 0;
+    };
+    h.scratch = std.heap.ArenaAllocator.init(allocator);
+    const a = h.scratch.allocator();
+
+    const lmsgs = wireToLuvMessages(h.req.messages, a) catch {
+        h.req.deinit(allocator);
+        h.scratch.deinit();
+        allocator.destroy(h);
+        return 0;
+    };
+    const ltools = a.alloc(luv.Tool, h.req.tools.len) catch {
+        h.req.deinit(allocator);
+        h.scratch.deinit();
+        allocator.destroy(h);
+        return 0;
+    };
+    for (h.req.tools, 0..) |wt, i| {
+        ltools[i] = luvToolFromWire(wt, a) catch {
+            h.req.deinit(allocator);
+            h.scratch.deinit();
+            allocator.destroy(h);
+            return 0;
+        };
+    }
+
+    h.machine = agent_machine.AgentMachine.init(allocator, .{
+        .conversation = lmsgs,
+        .model = h.req.model,
+        .tools = ltools,
+        .max_tokens = h.req.max_tokens,
+        .temperature = h.req.temperature,
+        .max_iterations = max_iter,
+    }) catch {
+        h.req.deinit(allocator);
+        h.scratch.deinit();
+        allocator.destroy(h);
+        return 0;
+    };
+    return @intFromPtr(h);
+}
+
+/// Out: u8 tag (0=provider_send,1=tool_calls,2=done) then:
+///   0: SendRequest wire    1: WireToolCall block    2: conv wire; u8 reason; u32 iters
+export fn agent_poll(handle: usize, out_ptr_out: usize, out_len_out: usize) i32 {
+    const h: *AgentHandle = @ptrFromInt(handle);
+    const a = h.scratch.allocator();
+    const p = h.machine.poll() catch return -2;
+
+    switch (p) {
+        .provider_send => |sp| {
+            const wmsgs = luvToWireMessages(sp.conversation, a) catch return -1;
+            const wtools = a.alloc(codec.WireTool, sp.tools.len) catch return -1;
+            for (sp.tools, 0..) |t, i| {
+                const s = std.json.Stringify.valueAlloc(a, t.input_schema, .{}) catch return -1;
+                wtools[i] = .{ .name = t.name, .description = t.description, .input_schema = s };
+            }
+            const wire = codec.encodeSendRequest(.{
+                .arena = undefined,
+                .model = sp.model,
+                .messages = wmsgs,
+                .max_tokens = sp.max_tokens,
+                .temperature = sp.temperature,
+                .stream = false,
+                .tools = wtools,
+            }, a) catch return -1;
+            const out = allocator.alloc(u8, 1 + wire.len) catch return -1;
+            out[0] = 0;
+            @memcpy(out[1..], wire);
+            writeOutPtrLen(out_ptr_out, out_len_out, @intFromPtr(out.ptr), @intCast(out.len));
+            return 0;
+        },
+        .tool_calls => |calls| {
+            const wcalls = a.alloc(codec.WireToolCall, calls.len) catch return -1;
+            for (calls, 0..) |c, i| {
+                const args = std.json.Stringify.valueAlloc(a, c.arguments, .{}) catch return -1;
+                wcalls[i] = .{ .id = c.id, .name = c.name, .args = args, .result = null };
+            }
+            const conv: codec.WireMessage = .{ .role = .assistant, .text = "", .tool_calls = wcalls };
+            const sz = 1 + codec.toolCallsSize(wcalls);
+            const out = allocator.alloc(u8, sz) catch return -1;
+            out[0] = 1;
+            var pos: usize = 1;
+            codec.writeToolCalls(out, &pos, conv.tool_calls);
+            writeOutPtrLen(out_ptr_out, out_len_out, @intFromPtr(out.ptr), @intCast(out.len));
+            return 0;
+        },
+        .done => |res| {
+            const wmsgs = luvToWireMessages(res.conversation, a) catch return -1;
+            const conv_bytes = codec.encodeConversation(wmsgs, a) catch return -1;
+            const out = allocator.alloc(u8, 1 + conv_bytes.len + 1 + 4) catch return -1;
+            out[0] = 2;
+            @memcpy(out[1 .. 1 + conv_bytes.len], conv_bytes);
+            out[1 + conv_bytes.len] = @intFromEnum(res.reason);
+            std.mem.writeInt(u32, out[1 + conv_bytes.len + 1 ..][0..4], res.iterations, .little);
+            writeOutPtrLen(out_ptr_out, out_len_out, @intFromPtr(out.ptr), @intCast(out.len));
+            return 0;
+        },
+    }
+}
+
+/// In: Reply wire; trailing u8 provider_failed.
+export fn agent_feed_reply(handle: usize, in_ptr: usize, in_len: usize) i32 {
+    const h: *AgentHandle = @ptrFromInt(handle);
+    const bytes = sliceFromAbi(in_ptr, in_len);
+    if (bytes.len < 1) return -2;
+    const failed = bytes[bytes.len - 1] != 0;
+    if (failed) {
+        h.machine.feedReply(undefined, true) catch return -2;
+        return 0;
+    }
+    const a = h.scratch.allocator();
+    const wr = codec.decodeReply(bytes[0 .. bytes.len - 1], a) catch return -3;
+    const calls = a.alloc(luv.ToolCall, wr.message.tool_calls.len) catch return -1;
+    for (wr.message.tool_calls, 0..) |wc, i| {
+        const args = std.json.parseFromSliceLeaky(std.json.Value, a, wc.args, .{}) catch return -3;
+        calls[i] = .{ .id = wc.id, .name = wc.name, .arguments = args };
+    }
+    const reply: luv.Reply = .{
+        .message = .{ .role = wr.message.role, .text = wr.message.text, .tool_calls = calls },
+        .stop_reason = wr.stop_reason,
+        .usage = wr.usage,
+    };
+    h.machine.feedReply(reply, false) catch return -2;
+    return 0;
+}
+
+/// In: u32 count; per result: u8 ok; u32 content_len; content.
+export fn agent_feed_tools(handle: usize, in_ptr: usize, in_len: usize) i32 {
+    const h: *AgentHandle = @ptrFromInt(handle);
+    const bytes = sliceFromAbi(in_ptr, in_len);
+    if (bytes.len < 4) return -2;
+    const a = h.scratch.allocator();
+    const count = std.mem.readInt(u32, bytes[0..4], .little);
+    const results = a.alloc(luv.ToolResult, count) catch return -1;
+    var pos: usize = 4;
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        if (pos + 5 > bytes.len) return -2;
+        const ok = bytes[pos] != 0;
+        pos += 1;
+        const clen = std.mem.readInt(u32, bytes[pos..][0..4], .little);
+        pos += 4;
+        if (pos + clen > bytes.len) return -2;
+        const content = bytes[pos .. pos + clen];
+        pos += clen;
+        results[i] = if (ok) .{ .ok = content } else .{ .err = content };
+    }
+    h.machine.feedToolResults(results) catch return -2;
+    return 0;
+}
+
+export fn agent_abort(handle: usize) void {
+    const h: *AgentHandle = @ptrFromInt(handle);
+    h.machine.abort();
+}
+
+export fn agent_destroy(handle: usize) void {
+    const h: *AgentHandle = @ptrFromInt(handle);
+    h.machine.deinit();
+    h.req.deinit(allocator);
+    h.scratch.deinit();
+    allocator.destroy(h);
+}
+
 /// Allocate a streaming Decoder. Returns its address (treat as opaque handle).
 export fn luv_decoder_new() usize {
     const dec_ptr = allocator.create(stream_morphism.Decoder) catch return 0;
@@ -898,5 +1094,62 @@ test "luv_pending_tool_calls + luv_respond_tool_call round-trip" {
     switch (a_msg.tool_calls[0].result.?) {
         .ok => |s| try testing.expectEqualStrings("{\"t\":18}", s),
         .err => try testing.expect(false),
+    }
+}
+
+test "agent_start/poll/feed_reply: single turn -> done end_turn" {
+    // Build the agent_start input: u32 sr_len; SendRequest wire; u32 max_iter.
+    const umsg = [_]codec.WireMessage{.{ .role = .user, .text = "hi", .tool_calls = &.{} }};
+    const sr = try codec.encodeSendRequest(.{
+        .arena = undefined,
+        .model = "m",
+        .messages = &umsg,
+        .max_tokens = null,
+        .temperature = null,
+        .stream = false,
+        .tools = &.{},
+    }, testing.allocator);
+    defer testing.allocator.free(sr);
+
+    var input: std.ArrayList(u8) = .empty;
+    defer input.deinit(testing.allocator);
+    try input.appendSlice(testing.allocator, &@as([4]u8, @bitCast(@as(u32, @intCast(sr.len)))));
+    try input.appendSlice(testing.allocator, sr);
+    try input.appendSlice(testing.allocator, &@as([4]u8, @bitCast(@as(u32, 10))));
+
+    const handle = agent_start(@intFromPtr(input.items.ptr), input.items.len);
+    try testing.expect(handle != 0);
+    defer agent_destroy(handle);
+
+    // poll #1 -> provider_send (tag 0)
+    var op: usize = 0;
+    var ol: usize = 0;
+    try testing.expectEqual(@as(i32, 0), agent_poll(handle, @intFromPtr(&op), @intFromPtr(&ol)));
+    {
+        const out: []const u8 = @as([*]const u8, @ptrFromInt(op))[0..ol];
+        try testing.expectEqual(@as(u8, 0), out[0]);
+        luv_free(op, ol);
+    }
+
+    // feed an assistant end_turn reply (Reply wire ++ u8 not-failed)
+    const reply = try codec.encodeReply(.{
+        .message = .{ .role = .assistant, .text = "hello", .tool_calls = &.{} },
+        .stop_reason = .end_turn,
+    }, testing.allocator);
+    defer testing.allocator.free(reply);
+    var fr: std.ArrayList(u8) = .empty;
+    defer fr.deinit(testing.allocator);
+    try fr.appendSlice(testing.allocator, reply);
+    try fr.append(testing.allocator, 0);
+    try testing.expectEqual(@as(i32, 0), agent_feed_reply(handle, @intFromPtr(fr.items.ptr), fr.items.len));
+
+    // poll #2 -> done (tag 2), reason end_turn (0), iterations 1
+    try testing.expectEqual(@as(i32, 0), agent_poll(handle, @intFromPtr(&op), @intFromPtr(&ol)));
+    {
+        const out: []const u8 = @as([*]const u8, @ptrFromInt(op))[0..ol];
+        try testing.expectEqual(@as(u8, 2), out[0]);
+        try testing.expectEqual(@as(u8, 0), out[out.len - 5]); // reason = end_turn
+        try testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, out[out.len - 4 ..][0..4], .little));
+        luv_free(op, ol);
     }
 }
