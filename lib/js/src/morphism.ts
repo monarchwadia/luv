@@ -31,15 +31,8 @@
 //     usage (and all subfields), choice.index, choice.logprobs,
 //     message.annotations, message.audio.
 
-import type {
-  Conversation,
-  JSONSchema,
-  Reply,
-  StopReason,
-  Tool,
-  ToolCall,
-  Usage,
-} from "./types.ts";
+import type { Conversation, JSONSchema, Reply, Tool } from "./types.ts";
+import { buildOpenAIRequest, parseOpenAIReply } from "./wasm/openai_bridge.ts";
 
 export interface ResponseFormat {
   readonly type: "json_schema";
@@ -129,117 +122,22 @@ export class MorphismError extends Error {
   }
 }
 
-export function toOpenAI(opts: ToOpenAIOptions): OpenAIWireRequest {
-  const messages: OpenAIWireMessage[] = [];
-  for (const m of opts.conversation) {
-    if (m.role === "assistant" && m.toolCalls && m.toolCalls.length > 0) {
-      const wireCalls: OpenAIWireToolCall[] = m.toolCalls.map((c) => ({
-        id: c.id,
-        type: "function",
-        function: { name: c.name, arguments: JSON.stringify(c.arguments) },
-      }));
-      const wireMsg: OpenAIWireMessage = {
-        role: "assistant",
-        tool_calls: wireCalls,
-      };
-      // Only include `content` when there's actual text. OpenAI accepts the
-      // field being either absent or null when an assistant message has only
-      // tool_calls; we omit it for cleaner cross-implementation parity.
-      if (m.text !== "") wireMsg.content = m.text;
-      messages.push(wireMsg);
-      // Split colocated → wire: emit one tool message per resolved call.
-      // Pending calls (result === undefined) emit nothing.
-      for (const c of m.toolCalls) {
-        if (c.result === undefined) continue;
-        const content = c.result.ok
-          ? c.result.content
-          : `Error: ${c.result.error}`;
-        messages.push({ role: "tool", tool_call_id: c.id, content });
-      }
-      continue;
-    }
-    messages.push({ role: m.role, content: m.text });
-  }
+// Single-sourced in Zig: toOpenAI/fromOpenAI now delegate to the wasm core
+// over the codec boundary (see wasm/openai_bridge.ts). The TS port logic was
+// deleted after the differential test proved byte/behavior equivalence.
+// `response_format` is applied in the bridge (Zig openai.zig drops it).
+// Signatures are unchanged — consumers and their tests are untouched.
 
-  const out: OpenAIWireRequest = {
-    model: opts.model,
-    messages,
-  };
-  if (opts.tools && opts.tools.length > 0) {
-    out.tools = opts.tools.map((t) => ({
-      type: "function",
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema,
-      },
-    }));
-  }
-  if (opts.maxTokens !== undefined) out.max_tokens = opts.maxTokens;
-  if (opts.temperature !== undefined) out.temperature = opts.temperature;
-  if (opts.stream) out.stream = true;
-  if (opts.responseFormat) out.response_format = opts.responseFormat;
-  return out;
+export function toOpenAI(opts: ToOpenAIOptions): OpenAIWireRequest {
+  return buildOpenAIRequest(opts);
 }
 
 export function fromOpenAI(wire: OpenAIWireResponse): Reply {
-  if (!wire.choices || wire.choices.length === 0) {
-    throw new MorphismError("fromOpenAI: response has no choices");
-  }
-  const choice = wire.choices[0]!;
-  const text = choice.message.content ?? choice.message.refusal ?? "";
-  const stopReason = stopReasonFromFinishReason(choice.finish_reason);
-  const usage = mapUsage(wire.usage);
-
-  const wireCalls = choice.message.tool_calls;
-  if (wireCalls && wireCalls.length > 0) {
-    const toolCalls: ToolCall[] = wireCalls.map((c) => {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(c.function.arguments);
-      } catch {
-        throw new MorphismError(
-          `fromOpenAI: tool_call.function.arguments is not valid JSON: ${c.function.arguments.slice(0, 80)}`,
-        );
-      }
-      return { id: c.id, name: c.function.name, arguments: parsed };
-    });
-    return {
-      message: { role: "assistant", text, toolCalls },
-      stopReason,
-      ...(usage && { usage }),
-    };
-  }
-
-  return {
-    message: { role: "assistant", text },
-    stopReason,
-    ...(usage && { usage }),
-  };
-}
-
-function mapUsage(u: OpenAIWireUsage | undefined): Usage | undefined {
-  if (!u) return undefined;
-  // OpenAI always sends all three when usage is present, but defensively coerce.
-  return {
-    promptTokens: u.prompt_tokens ?? 0,
-    completionTokens: u.completion_tokens ?? 0,
-    totalTokens: u.total_tokens ?? 0,
-  };
-}
-
-function stopReasonFromFinishReason(s: string): StopReason {
-  switch (s) {
-    case "stop":
-      return "end_turn";
-    case "length":
-      return "max_tokens";
-    case "content_filter":
-      return "content_filter";
-    case "tool_calls":
-    case "function_call":
-      return "tool_use";
-    default:
-      return "other";
+  try {
+    return parseOpenAIReply(wire);
+  } catch (e) {
+    // Preserve the public contract: fromOpenAI throws MorphismError.
+    if (e instanceof MorphismError) throw e;
+    throw new MorphismError(e instanceof Error ? e.message : String(e));
   }
 }
