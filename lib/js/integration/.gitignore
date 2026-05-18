@@ -1,5 +1,4 @@
 .pack/
 consumers/*/node_modules/
 consumers/*/dist/
-consumers/*/.parcel-cache/
 consumers/*/bun.lock

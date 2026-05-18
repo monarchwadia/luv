@@ -7,7 +7,7 @@ user would.
 
 ```bash
 bun integration/run.ts            # quick: node, bun, esbuild
-bun integration/run.ts --all      # + vite, webpack, parcel + Playwright browsers
+bun integration/run.ts --all      # + vite, webpack + Playwright browsers
 bun integration/run.ts --only=bun,esbuild
 bun integration/run.ts --browser  # force browser consumers on
 ```
@@ -24,10 +24,11 @@ bun integration/run.ts --browser  # force browser consumers on
 
 ## Notes / dependency policy
 
-- **No convenience plugins.** Vite, webpack, esbuild, Parcel resolve
-  `node_modules` natively. Standalone Rollup is intentionally omitted — vanilla
-  Rollup can't resolve bare specifiers without a resolver plugin, and Vite's
-  production build already exercises Rollup.
+- **No convenience plugins.** Vite, webpack, esbuild resolve `node_modules`
+  natively. Standalone Rollup is intentionally omitted — vanilla Rollup can't
+  resolve bare specifiers without a resolver plugin, and Vite's production
+  build already exercises Rollup. Parcel is omitted — it crashes under Bun's
+  runtime (native modules) and isn't worth a Node-only carve-out.
 - **Node consumer** is skipped automatically on a Node-less host (this dev box
   is Bun-only); it runs wherever `node` is on PATH.
 - **Playwright is optional.** Browser builds still run and are validated; the

@@ -10,10 +10,11 @@
  * build, and assert the public exports resolve. Browser consumers are loaded
  * in Chromium/Firefox/WebKit via Playwright (skipped if Playwright absent).
  *
- * No-plugin policy: Vite/webpack/esbuild/Parcel resolve node_modules natively
- * so they consume the tarball with zero plugins. Standalone Rollup is omitted
- * — vanilla Rollup cannot resolve bare specifiers without a resolver plugin,
- * and Vite's production build already exercises Rollup.
+ * No-plugin policy: Vite/webpack/esbuild resolve node_modules natively so they
+ * consume the tarball with zero plugins. Standalone Rollup is omitted — vanilla
+ * Rollup cannot resolve bare specifiers without a resolver plugin, and Vite's
+ * production build already exercises Rollup. Parcel is omitted — it crashes
+ * under Bun's runtime (native modules) and isn't worth a Node-only carve-out.
  */
 import { spawn } from "bun";
 import { existsSync } from "node:fs";
@@ -37,7 +38,6 @@ const REGISTRY: Consumer[] = [
   { name: "esbuild", kind: "browser", heavy: false },
   { name: "vite", kind: "browser", heavy: true },
   { name: "webpack", kind: "browser", heavy: true },
-  { name: "parcel", kind: "browser", heavy: true },
 ];
 
 const results: { name: string; status: "PASS" | "FAIL" | "SKIP"; detail: string }[] = [];
