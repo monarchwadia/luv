@@ -97,6 +97,26 @@ pub fn build(b: *std.Build) void {
     gen_sdk_step.dependOn(&run_gen_sdk.step);
     gen_ts_step.dependOn(&run_gen_sdk.step);
 
+    // gen_wire (P3 spike): wire.zig schema -> the TS framing codec.
+    const wire_mod = b.createModule(.{
+        .root_source_file = b.path("src/wasm_abi/wire.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const gen_wire = b.addExecutable(.{
+        .name = "gen_wire",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/gen_wire.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    gen_wire.root_module.addImport("wire", wire_mod);
+    const run_gen_wire = b.addRunArtifact(gen_wire);
+    const gen_wire_step = b.step("gen-wire", "Generate lib/js/src/wasm/wire.generated.ts from wire.zig");
+    gen_wire_step.dependOn(&run_gen_wire.step);
+    gen_ts_step.dependOn(&run_gen_wire.step);
+
     const fmt = b.addFmt(.{
         .paths = &.{ "src", "build.zig", "tools" },
         .check = true,

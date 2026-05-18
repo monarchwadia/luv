@@ -19,6 +19,7 @@
 // arises on a genuine encode bug and must surface loudly.
 
 import { callWasm } from "./sync.ts";
+import { encodeToolArgsIn } from "./wire.generated.ts";
 import { ToolArgsError } from "../tool_args.ts";
 
 const te = new TextEncoder();
@@ -45,32 +46,17 @@ function toolArgsErrorFromFull(full: string): ToolArgsError {
   return new ToolArgsError("", full);
 }
 
+// Value-encoding (JSON.stringify + UTF-8) stays here — it is brick-specific.
+// The byte FRAMING is generated from the wire.zig schema (P3 spike):
+// `encodeToolArgsIn` is byte-identical to the hand layout it replaces. A
+// null/undefined schema → no schema bytes (flag 0), preserved exactly.
 function encode(args: unknown, schema: unknown | undefined): Uint8Array {
   const argsBytes = te.encode(JSON.stringify(args));
   const hasSchema = schema !== undefined && schema !== null;
   const schemaBytes = hasSchema
     ? te.encode(JSON.stringify(schema))
-    : new Uint8Array(0);
-
-  const total =
-    4 + argsBytes.length + 1 + (hasSchema ? 4 + schemaBytes.length : 0);
-  const buf = new Uint8Array(total);
-  const dv = new DataView(buf.buffer);
-
-  let pos = 0;
-  dv.setUint32(pos, argsBytes.length, true);
-  pos += 4;
-  buf.set(argsBytes, pos);
-  pos += argsBytes.length;
-  buf[pos] = hasSchema ? 1 : 0;
-  pos += 1;
-  if (hasSchema) {
-    dv.setUint32(pos, schemaBytes.length, true);
-    pos += 4;
-    buf.set(schemaBytes, pos);
-    pos += schemaBytes.length;
-  }
-  return buf;
+    : undefined;
+  return encodeToolArgsIn(argsBytes, schemaBytes);
 }
 
 /** Synchronous: validate `args` against `schema` via wasm.
