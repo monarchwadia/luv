@@ -58,8 +58,27 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&exe.step);
     check_step.dependOn(&wasm_exe.step);
 
+    const luv_mod = b.createModule(.{
+        .root_source_file = b.path("src/morphisms/luv/luv.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const gen_ts = b.addExecutable(.{
+        .name = "gen_ts_types",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/gen_ts_types.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    gen_ts.root_module.addImport("luv", luv_mod);
+    const run_gen_ts = b.addRunArtifact(gen_ts);
+    run_gen_ts.addArg("../lib/js/src/types.generated.ts");
+    const gen_ts_step = b.step("gen-ts", "Generate lib/js/src/types.generated.ts from luv.zig");
+    gen_ts_step.dependOn(&run_gen_ts.step);
+
     const fmt = b.addFmt(.{
-        .paths = &.{ "src", "build.zig" },
+        .paths = &.{ "src", "build.zig", "tools" },
         .check = true,
     });
     const fmt_step = b.step("fmt", "Check formatting");

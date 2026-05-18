@@ -1,15 +1,8 @@
-// Canonical luv types — pure data, mirrors core/src/morphisms/luv/luv.zig.
-// All public types in luv-js flow through these.
-
-export type Role = "system" | "user" | "assistant";
-
-export type StopReason =
-  | "end_turn"
-  | "max_tokens"
-  | "content_filter"
-  | "stop_sequence"
-  | "tool_use"
-  | "other";
+// Canonical luv types. Role / StopReason / Usage are GENERATED from
+// core/src/morphisms/luv/luv.zig (single source of truth) and re-exported
+// here; the rest are the host-ergonomic surface. Run `make gen-ts` to refresh.
+import type { Role, StopReason, Usage } from "./types.generated.ts";
+export type { Role, StopReason, Usage };
 
 // ---------------------------------------------------------------------------
 // Tools
@@ -105,12 +98,6 @@ export type Message =
     };
 
 export type Conversation = readonly Message[];
-
-export interface Usage {
-  readonly promptTokens: number;
-  readonly completionTokens: number;
-  readonly totalTokens: number;
-}
 
 export interface Reply {
   readonly message: Message;
