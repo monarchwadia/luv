@@ -35,7 +35,10 @@ export function encodeNode(n: Node): unknown {
 }
 
 export function encodeConversation(c: Conversation): unknown {
-  return c.map(encodeNode);
+  return {
+    spec_version: c.spec_version,
+    nodes: c.nodes.map(encodeNode),
+  };
 }
 
 export function encodeReply(r: Reply): unknown {

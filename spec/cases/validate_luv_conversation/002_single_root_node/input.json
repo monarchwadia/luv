@@ -1,1 +1,1 @@
-[{"id":"n1","parent_id":null,"message":{"role":"user","content":[{"kind":"text","text":"Hello"}]}}]
+{"spec_version":"1.0","nodes":[{"id":"n1","parent_id":null,"message":{"role":"user","content":[{"kind":"text","text":"Hello"}]}}]}

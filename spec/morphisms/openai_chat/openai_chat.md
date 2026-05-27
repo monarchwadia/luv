@@ -264,6 +264,7 @@ this list is exhaustive.
 | Empty text blocks in a message | Contribute the empty string to `content`; indistinguishable from absent. |
 | Forking conversations | Only the branch from the caller-designated head is encoded; sibling branches in the canonical Conversation are not represented in the OpenAI request. |
 | Node `id` and `parent_id` | Not carried into the OpenAI request; they exist only at the luv side. |
+| `spec_version` | Not carried into the OpenAI request; it is metadata about which luv version the canonical value conforms to. |
 
 ### `openai_response_to_luv_reply`
 

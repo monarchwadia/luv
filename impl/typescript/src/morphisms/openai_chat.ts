@@ -22,7 +22,7 @@ export function luv_conversation_to_openai_request(
 ): unknown {
   const messages: unknown[] = [];
 
-  for (const node of conv) {
+  for (const node of conv.nodes) {
     const m = node.message;
     if (m.role === "system") {
       const text = concatTextBlocks(m.content);

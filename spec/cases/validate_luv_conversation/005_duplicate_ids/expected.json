@@ -1,1 +1,1 @@
-{"valid":false,"errors":[{"path":"/2/id","rule":"invariant.unique_ids","message":"id 'b' already appears at /1/id"}]}
+{"valid":false,"errors":[{"path":"/nodes/2/id","rule":"invariant.unique_ids","message":"id 'b' already appears at /nodes/1/id"}]}

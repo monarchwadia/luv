@@ -16,7 +16,12 @@ export interface Node {
   message: Message;
 }
 
-export type Conversation = Node[];
+export interface Conversation {
+  spec_version: string;
+  nodes: Node[];
+}
+
+export const LUV_SPEC_VERSION = "1.0";
 
 export type FinishReason = "end_turn" | "max_tokens" | "content_filter";
 

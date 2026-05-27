@@ -282,12 +282,16 @@ the Block definition above.
 
 ### 2.3 Conversation
 
-A conversation is a finite list of nodes. Each node carries a message
-and references its parent (the node it responds to), forming a tree
-that supports both linear conversations and forks.
+A conversation is a top-level container with a spec version marker and
+a finite list of nodes. The version field declares which version of the
+luv spec the conversation conforms to; readers determine how to
+interpret the value from this field before parsing the rest.
 
 ```
-Conversation := [Node, ...]
+Conversation := {
+  spec_version: Text,
+  nodes: [Node, ...]
+}
 
 Node := {
   id: Text,
@@ -296,27 +300,38 @@ Node := {
 }
 ```
 
-**Canonical JSON form.**
+**`spec_version`.** In this version of the spec, the value is the
+string `"1.0"`. Future spec revisions will use higher version strings
+following semantic-versioning conventions. Implementations should
+refuse conversations whose `spec_version` they do not understand.
+
+**Canonical JSON form (Conversation).**
 
 ```json
-[{"id":"<id>","parent_id":"<id-or-null>","message":{...}}, ...]
+{"spec_version":"1.0","nodes":[{"id":"<id>","parent_id":"<id-or-null>","message":{...}}, ...]}
 ```
 
-A node's key order is fixed: `id` precedes `parent_id` precedes
-`message`. For root nodes, `parent_id` is the JSON literal `null`.
+Key order is fixed: `spec_version` precedes `nodes`. Both fields are
+required.
 
-An empty conversation is the JSON array `[]`.
+**Canonical JSON form (Node).** A node's key order is fixed: `id`
+precedes `parent_id` precedes `message`. For root nodes, `parent_id`
+is the JSON literal `null`.
+
+An empty conversation is `{"spec_version":"1.0","nodes":[]}`.
 
 **Well-formedness invariants.** A canonical Conversation is well-formed
 iff all of the following hold:
 
+0. **Known `spec_version`.** `spec_version` is a value the validator
+   recognizes (currently `"1.0"`).
 1. **Unique ids.** No two nodes share an `id`.
 2. **Valid parent references.** For every node with non-null
-   `parent_id`, a node with that `id` exists in the same conversation.
-3. **Single root.** Exactly one node has `parent_id: null` (zero for an
-   empty conversation).
-4. **Topological array order.** A node's parent (if any) appears earlier
-   in the array than the node itself.
+   `parent_id`, a node with that `id` exists in `nodes`.
+3. **Single root.** Exactly one node has `parent_id: null` (zero for
+   an empty `nodes`).
+4. **Topological array order.** A node's parent (if any) appears
+   earlier in the `nodes` array than the node itself.
 5. **Acyclic.** No node is its own ancestor. (Implied by 3+4.)
 6. **`tool_result.call_id` resolves in ancestry.** If a node contains a
    `tool_result` block with `call_id: X`, then a node carrying a
@@ -521,10 +536,11 @@ validated input. The path must resolve to the exact offending element.
 Examples:
 
 - `/` — the root value
-- `/3` — the 4th array element
-- `/3/parent_id` — the `parent_id` field of the 4th array element
-- `/3/message/content/1/text` — the `text` field of the 2nd block of
-  the message of the 4th node
+- `/spec_version` — the conversation's spec_version field
+- `/nodes/3` — the 4th node
+- `/nodes/3/parent_id` — the `parent_id` field of the 4th node
+- `/nodes/3/message/content/1/text` — the `text` field of the 2nd block
+  of the message of the 4th node
 
 **Traversal order.** Validators emit errors in depth-first, left-to-right
 order over the validated input. Array elements are visited by ascending
@@ -572,14 +588,22 @@ once published in a spec version, is never renamed or repurposed.
 | `shape.stream_event.kind` | StreamEvent.kind matches a defined variant |
 | `shape.stream_event.variant_fields` | StreamEvent variant has its required fields |
 
+#### Conversation envelope (Section 2.3)
+
+| Rule id | Checks |
+|---|---|
+| `shape.conversation.is_object` | Conversation must be a JSON object |
+| `shape.conversation.fields` | Conversation has required `{spec_version, nodes}` with correct types |
+| `shape.conversation.spec_version` | `spec_version` is a value this implementation recognizes |
+
 #### Conversation graph invariants (Section 2.3)
 
 | Rule id | Checks |
 |---|---|
 | `invariant.unique_ids` | Node ids are unique within the conversation |
-| `invariant.parent_reference` | Every non-null `parent_id` resolves to a node in the conversation |
-| `invariant.single_root` | Exactly one node has `parent_id: null` (zero for empty) |
-| `invariant.topological_order` | A node's parent appears earlier in the array than the node |
+| `invariant.parent_reference` | Every non-null `parent_id` resolves to a node in `nodes` |
+| `invariant.single_root` | Exactly one node has `parent_id: null` (zero for empty `nodes`) |
+| `invariant.topological_order` | A node's parent appears earlier in `nodes` than the node |
 | `invariant.acyclic` | No node is its own ancestor |
 | `invariant.tool_result_ancestry` | Every `tool_result.call_id` resolves to a `tool_call` on the ancestral path |
 
@@ -607,12 +631,12 @@ elements, the error's `path` points to the **primary failure point**:
 
 | Rule | Primary path points to |
 |---|---|
-| `invariant.unique_ids` | The second and each subsequent duplicate occurrence |
-| `invariant.parent_reference` | The Node carrying the dangling `parent_id` |
-| `invariant.single_root` | The second and each subsequent root node |
-| `invariant.topological_order` | The Node appearing earlier than its parent |
-| `invariant.acyclic` | The Node where the cycle is first observed |
-| `invariant.tool_result_ancestry` | The `tool_result` Block whose `call_id` does not resolve |
+| `invariant.unique_ids` | `/nodes/<i>/id` of the second and each subsequent duplicate occurrence |
+| `invariant.parent_reference` | `/nodes/<i>/parent_id` of the Node carrying the dangling reference |
+| `invariant.single_root` | `/nodes/<i>` of the second and each subsequent root node |
+| `invariant.topological_order` | `/nodes/<i>/parent_id` of the Node appearing earlier than its parent |
+| `invariant.acyclic` | `/nodes/<i>` of the Node where the cycle is first observed |
+| `invariant.tool_result_ancestry` | `/nodes/<i>/message/content/<j>/call_id` of the `tool_result` Block whose `call_id` does not resolve |
 | `stream.block_balance` | The orphan `block_start` or `block_end` event |
 
 For multi-element issues, one error is emitted per offending location;

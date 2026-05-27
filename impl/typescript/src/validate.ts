@@ -39,32 +39,62 @@ export function validate_luv_stream_reply(
   return errors.length === 0 ? { valid: true } : { valid: false, errors };
 }
 
+const SUPPORTED_SPEC_VERSION = "1.0";
+
 export function validate_luv_conversation(
   input: unknown,
 ): ValidationResult {
   const errors: ValidationError[] = [];
 
-  if (!Array.isArray(input)) {
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
     errors.push({
       path: "/",
-      rule: "shape.conversation.is_array",
-      message: "Conversation must be a JSON array",
+      rule: "shape.conversation.is_object",
+      message: "Conversation must be a JSON object",
     });
     return { valid: false, errors };
   }
 
-  // Single-pass walk. The id map is populated as we go, so any parent_id
-  // referencing a yet-unseen node fails either parent_reference (if the
-  // id never appears) or topological_order (if the id appears later).
-  // We compute parent_reference after the walk so we know whether an id
-  // exists anywhere; topological_order is detected during the walk.
+  const c = input as Record<string, unknown>;
+
+  // spec_version checks
+  if (typeof c.spec_version !== "string") {
+    errors.push({
+      path: "/spec_version",
+      rule: "shape.conversation.fields",
+      message: "Conversation.spec_version must be a string",
+    });
+  } else if (c.spec_version !== SUPPORTED_SPEC_VERSION) {
+    errors.push({
+      path: "/spec_version",
+      rule: "shape.conversation.spec_version",
+      message: `Unknown spec_version '${c.spec_version}'; this implementation supports '${SUPPORTED_SPEC_VERSION}'`,
+    });
+  }
+
+  // nodes check
+  if (!Array.isArray(c.nodes)) {
+    errors.push({
+      path: "/nodes",
+      rule: "shape.conversation.fields",
+      message: "Conversation.nodes must be an array",
+    });
+    return { valid: false, errors };
+  }
+
+  const nodes = c.nodes;
+
+  // Single-pass walk of nodes. The id map is populated as we go, so
+  // any parent_id referencing a yet-unseen node fails either
+  // parent_reference (if the id never appears) or topological_order
+  // (if the id appears later).
   const idIndex = new Map<string, number>();
   const rootIndices: number[] = [];
 
   // Walk first to gather shape errors, ids, and root positions.
-  for (let i = 0; i < input.length; i++) {
-    const node = input[i] as Record<string, unknown> | null;
-    const nodePath = `/${i}`;
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i] as Record<string, unknown> | null;
+    const nodePath = `/nodes/${i}`;
 
     if (node === null || typeof node !== "object" || Array.isArray(node)) {
       errors.push({
@@ -88,7 +118,7 @@ export function validate_luv_conversation(
         errors.push({
           path: `${nodePath}/id`,
           rule: "invariant.unique_ids",
-          message: `id '${node.id}' already appears at /${idIndex.get(node.id)}/id`,
+          message: `id '${node.id}' already appears at /nodes/${idIndex.get(node.id)}/id`,
         });
       } else {
         idIndex.set(node.id, i);
@@ -124,47 +154,47 @@ export function validate_luv_conversation(
 
   // Cross-element invariants (parent_reference, topological_order, single_root)
   // emitted after the per-node pass, but inserted in path order via a sort below.
-  for (let i = 0; i < input.length; i++) {
-    const node = input[i] as Record<string, unknown> | null;
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i] as Record<string, unknown> | null;
     if (node === null || typeof node !== "object" || Array.isArray(node)) continue;
     const pid = node.parent_id;
     if (typeof pid !== "string") continue;
     const idx = idIndex.get(pid);
     if (idx === undefined) {
       errors.push({
-        path: `/${i}/parent_id`,
+        path: `/nodes/${i}/parent_id`,
         rule: "invariant.parent_reference",
         message: `parent_id '${pid}' does not resolve to any node in the conversation`,
       });
     } else if (idx >= i) {
       errors.push({
-        path: `/${i}/parent_id`,
+        path: `/nodes/${i}/parent_id`,
         rule: "invariant.topological_order",
         message: `parent appears at index ${idx}; must appear before the node at index ${i}`,
       });
     }
   }
 
-  if (input.length > 0 && rootIndices.length === 0) {
+  if (nodes.length > 0 && rootIndices.length === 0) {
     errors.push({
-      path: "/",
+      path: "/nodes",
       rule: "invariant.single_root",
       message: "No root node found (no node has parent_id: null)",
     });
   } else if (rootIndices.length > 1) {
     for (let i = 1; i < rootIndices.length; i++) {
       errors.push({
-        path: `/${rootIndices[i]}`,
+        path: `/nodes/${rootIndices[i]}`,
         rule: "invariant.single_root",
-        message: `Second root node; first root is at /${rootIndices[0]}`,
+        message: `Second root node; first root is at /nodes/${rootIndices[0]}`,
       });
     }
   }
 
   // tool_result_ancestry: for each tool_result block in the conversation,
   // walk its node's parent chain looking for a matching tool_call.id.
-  for (let i = 0; i < input.length; i++) {
-    const node = input[i] as Record<string, unknown> | null;
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i] as Record<string, unknown> | null;
     if (node === null || typeof node !== "object" || Array.isArray(node)) continue;
     const msg = node.message as Record<string, unknown> | undefined;
     if (!msg || typeof msg !== "object") continue;
@@ -176,9 +206,9 @@ export function validate_luv_conversation(
       if (!b || typeof b !== "object" || b.kind !== "tool_result") continue;
       const callId = b.call_id;
       if (typeof callId !== "string") continue;
-      if (!ancestryHasToolCall(input, i, callId)) {
+      if (!ancestryHasToolCall(nodes, i, callId)) {
         errors.push({
-          path: `/${i}/message/content/${j}/call_id`,
+          path: `/nodes/${i}/message/content/${j}/call_id`,
           rule: "invariant.tool_result_ancestry",
           message: `call_id '${callId}' is not present as a tool_call.id on any ancestor node`,
         });

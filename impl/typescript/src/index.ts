@@ -12,6 +12,8 @@ export type {
   ValidationResult,
 } from "./types.ts";
 
+export { LUV_SPEC_VERSION } from "./types.ts";
+
 export {
   encodeBlock,
   encodeMessage,
