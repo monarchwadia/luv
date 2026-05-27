@@ -1,4 +1,0 @@
-.pack/
-consumers/*/node_modules/
-consumers/*/dist/
-consumers/*/bun.lock

@@ -1,5 +1,0 @@
-{
-  "slug": "tool_round_trip",
-  "shape": "user → assistant requests tool → loop executes tool → assistant replies with result",
-  "synthetic": true
-}

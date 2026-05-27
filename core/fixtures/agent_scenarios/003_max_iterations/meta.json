@@ -1,5 +1,0 @@
-{
-  "slug": "max_iterations",
-  "shape": "model keeps requesting tool calls; loop hits max_iterations cap",
-  "synthetic": true
-}

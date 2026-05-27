@@ -1,5 +1,0 @@
-{
-  "slug": "single_user",
-  "shape": "one user message, expect finish_reason=stop",
-  "synthetic": false
-}

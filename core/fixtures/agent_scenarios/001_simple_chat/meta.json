@@ -1,5 +1,0 @@
-{
-  "slug": "simple_chat",
-  "shape": "single user message → single assistant reply, no tools, finish_reason=end_turn",
-  "synthetic": true
-}

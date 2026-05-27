@@ -1,9 +1,0 @@
-{
-  "model": "gpt-4o-mini",
-  "messages": [
-    { "role": "user", "content": "Count from one to five, separated by commas." }
-  ],
-  "max_tokens": 32,
-  "temperature": 0,
-  "stream": true
-}
