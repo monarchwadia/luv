@@ -1,0 +1,1 @@
+{"method":"POST","url":"https://api.openai.com/v1/chat/completions","headers":{"authorization":"Bearer sk-test-123","content-type":"application/json","openai-organization":"org-abc"},"body":"{\"model\":\"gpt-4o-mini\",\"messages\":[{\"role\":\"user\",\"content\":\"What is the capital of France?\"}]}"}

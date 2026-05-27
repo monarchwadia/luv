@@ -1,0 +1,1 @@
+{"conversation":{"spec_version":"1.0","nodes":[{"id":"n1","parent_id":null,"message":{"role":"user","content":[{"kind":"text","text":"What is the capital of France?"}]}}]},"opts":{"model":"gpt-4o-mini"},"config":{"api_key":"sk-test-123"}}

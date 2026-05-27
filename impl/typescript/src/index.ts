@@ -40,3 +40,16 @@ export {
   validate_luv_reply,
   validate_luv_stream_reply,
 } from "./validate.ts";
+
+export {
+  luv_send_to_openai_http_request,
+  openai_http_response_to_luv_reply,
+  openai_http_stream_to_luv_stream,
+  openaiClient,
+  type HTTPRequest,
+  type HTTPResponse,
+  type OpenAIClient,
+  type OpenAIClientConfig,
+  type ErrorPolicy,
+  type ErrorPolicyMap,
+} from "./transport/openai_chat.ts";

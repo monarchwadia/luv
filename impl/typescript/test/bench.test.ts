@@ -16,6 +16,23 @@ import {
   openai_response_to_luv_reply,
   openai_stream_to_luv_stream,
 } from "../src/morphisms/openai_chat.ts";
+import {
+  luv_send_to_openai_http_request,
+  openai_http_response_to_luv_reply,
+  openai_http_stream_to_luv_stream,
+  type HTTPRequest,
+  type HTTPResponse,
+  type OpenAIClientConfig,
+} from "../src/transport/openai_chat.ts";
+
+function encodeHTTPRequest(req: HTTPRequest): unknown {
+  return {
+    method: req.method,
+    url: req.url,
+    headers: req.headers,
+    body: req.body,
+  };
+}
 
 // SPEC root (assumes the impl lives at impl/typescript/ inside the repo).
 const SPEC_ROOT = join(import.meta.dir, "..", "..", "..", "spec");
@@ -46,6 +63,35 @@ const arrows: Record<string, ArrowFn> = {
 
   openai_stream_to_luv_stream: (input) =>
     stringify(encodeStreamReply(openai_stream_to_luv_stream(input as never))),
+
+  luv_send_to_openai_http_request: (input) => {
+    const wrapped = input as {
+      conversation: never;
+      opts: never;
+      config: OpenAIClientConfig;
+    };
+    return stringify(
+      encodeHTTPRequest(
+        luv_send_to_openai_http_request(
+          wrapped.conversation,
+          wrapped.opts,
+          wrapped.config,
+        ),
+      ),
+    );
+  },
+
+  openai_http_response_to_luv_reply: (input) =>
+    stringify(
+      encodeReply(openai_http_response_to_luv_reply(input as HTTPResponse)),
+    ),
+
+  openai_http_stream_to_luv_stream: (input) =>
+    stringify(
+      encodeStreamReply(
+        openai_http_stream_to_luv_stream(input as HTTPResponse),
+      ),
+    ),
 };
 
 // Walk a cases root (either spec/cases or spec/morphisms/*/cases) and
