@@ -1,0 +1,1 @@
+{"model":"gpt-4o-mini","messages":[{"role":"user","content":"What's the weather in SF?"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"SF\"}"}}]},{"role":"tool","tool_call_id":"call_1","content":"65 and sunny"}]}

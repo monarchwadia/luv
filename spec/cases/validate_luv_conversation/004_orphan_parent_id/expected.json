@@ -1,0 +1,1 @@
+{"valid":false,"errors":[{"path":"/1/parent_id","rule":"invariant.parent_reference","message":"parent_id 'n_missing' does not resolve to any node in the conversation"}]}

@@ -1,0 +1,1 @@
+[{"id":"n1","parent_id":null,"message":{"role":"system","content":[{"kind":"text","text":"You are a helpful assistant."}]}},{"id":"n2","parent_id":"n1","message":{"role":"user","content":[{"kind":"text","text":"Say hello."}]}}]
