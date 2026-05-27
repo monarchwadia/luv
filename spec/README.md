@@ -5,7 +5,7 @@ the luv canonical conversation type and the morphisms that map it to and from
 real LLM provider APIs.
 
 This folder contains **no executable code**. It is the source of truth.
-Hydrations into specific languages consume this spec; they do not define it.
+Implementations into specific languages consume this spec; they do not define it.
 
 ## Why a spec, not a reference implementation
 
@@ -13,7 +13,7 @@ A reference implementation in any single language anchors the spec to that
 language's defaults: how nulls vs. missing fields are distinguished, integer
 widths, error taxonomy, enum vs. tagged-union representation, streaming
 back-pressure semantics. Those defaults leak into the "canonical" shape and
-make every other hydration a translation of the reference instead of a peer
+make every other implementation a translation of the reference instead of a peer
 realization of the spec. The spec must stay portable on its own terms.
 
 ## What the spec contains
@@ -34,8 +34,8 @@ realization of the spec. The spec must stay portable on its own terms.
 
 ## Non-goals
 
-- Transport, auth, retries, rate limiting — concerns of the hydrations, not
-  the morphism.
+- Transport, auth, retries, rate limiting — concerns of the implementations, 
+  not the morphism.
 - SDK ergonomics, helpers, middleware — downstream of the spec.
 - Performance characteristics — out of scope; the spec describes shapes and
   semantics, not runtime behavior.
