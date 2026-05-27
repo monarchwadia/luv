@@ -23,6 +23,13 @@ export function encodeBlock(b: Block): unknown {
       return { kind: b.kind, id: b.id, name: b.name, args: b.args };
     case "tool_result":
       return { kind: b.kind, call_id: b.call_id, text: b.text };
+    case "error":
+      return {
+        kind: b.kind,
+        category: b.category,
+        message: b.message,
+        details: b.details,
+      };
   }
 }
 

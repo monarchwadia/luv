@@ -235,13 +235,25 @@ Message := {
 }
 ```
 
-Where `Block` is a sum type with three variants:
+Where `Block` is a sum type with four variants:
 
 ```
 Block :=
   | { kind: "text", text: Text }
   | { kind: "tool_call", id: Text, name: Text, args: Text }
   | { kind: "tool_result", call_id: Text, text: Text }
+  | { kind: "error", category: ErrorCategory, message: Text, details: Text }
+
+ErrorCategory :=
+  | "auth"
+  | "rate_limit"
+  | "bad_request"
+  | "content_filter"
+  | "server_error"
+  | "network"
+  | "tool_execution"
+  | "local_validation"
+  | "unknown"
 ```
 
 **Block variants.**
@@ -256,12 +268,37 @@ Block :=
   `call_id` references the `id` of the originating `tool_call`. `text`
   carries the tool's output as a string; use canonical JSON for
   structured results.
+- **error** — a failure observed during the production of this message,
+  surfaced as conversation data rather than thrown out-of-band. `category`
+  identifies the failure class; `message` is a human-readable summary;
+  `details` is canonical JSON (Section 3) carried as `Text` for any
+  structured payload (HTTP status, retry-after, provider error body,
+  etc.). Implementations may surface errors as blocks or throw them as
+  out-of-band exceptions; the choice is per-category configuration
+  (transport spec) and outside the canonical spec.
+
+**`ErrorCategory` values.**
+
+| Value | Meaning |
+|---|---|
+| `auth` | Authentication or authorization failure (HTTP 401, invalid API key). |
+| `rate_limit` | Provider rate limit exceeded (HTTP 429). |
+| `bad_request` | Request was malformed or rejected by the provider for shape reasons (HTTP 400). |
+| `content_filter` | Provider's safety system blocked the request or response content. |
+| `server_error` | Provider-side internal error (HTTP 5xx). |
+| `network` | Network-level failure (connection refused, DNS, TLS, timeout, connection drop). |
+| `tool_execution` | A tool handler threw or returned malformed output. Emitted by the agent layer, not the transport. |
+| `local_validation` | A luv validator (Section 2.7) rejected canonical data. |
+| `unknown` | Catchall for failures that do not map to any of the above. |
 
 **Role conventions (not enforced at the type level).**
 
 - `text` blocks may appear in messages of any role.
 - `tool_call` blocks appear only in assistant messages.
 - `tool_result` blocks appear only in user messages.
+- `error` blocks may appear in messages of any role; most naturally in
+  the role of whoever generated the failure (assistant errors in
+  assistant messages, tool errors in user messages).
 
 A morphism may reject canonical messages that violate these conventions
 by listing the rejection under its `homomorphism_exceptions`.
@@ -381,12 +418,21 @@ properties follow directly from the invariants:
 An enumeration of reasons a Reply terminated.
 
 ```
-FinishReason := "end_turn" | "max_tokens" | "content_filter"
+FinishReason := "end_turn" | "max_tokens" | "content_filter" | "error"
 ```
 
-Canonical JSON form: a string equal to one of the three literals above.
-Additional finish reasons (e.g., for tool use) are deferred to future spec
-versions.
+Canonical JSON form: a string equal to one of the four literals above.
+
+- `end_turn` — natural completion.
+- `max_tokens` — output stopped because a token cap was reached.
+- `content_filter` — provider safety system blocked the content.
+- `error` — the turn failed before a natural finish reason could be
+  reported (transport failure, network drop, parse error). The
+  reply's `message.content` will contain an `error` block describing
+  the failure.
+
+Additional finish reasons (e.g., a dedicated `tool_use`) are deferred
+to future spec versions.
 
 ### 2.5 Reply
 
@@ -581,6 +627,7 @@ once published in a spec version, is never renamed or repurposed.
 | `shape.block.text` | text variant has `{kind, text}` with correct types |
 | `shape.block.tool_call` | tool_call variant has `{kind, id, name, args}` with correct types |
 | `shape.block.tool_result` | tool_result variant has `{kind, call_id, text}` with correct types |
+| `shape.block.error` | error variant has `{kind, category, message, details}` with correct types and `category` is a known `ErrorCategory` value |
 | `shape.reply.fields` | Reply has `{message, finish_reason}` with correct types |
 | `shape.reply.assistant_role` | Reply.message.role is exactly `assistant` |
 | `shape.reply.content_restriction` | Reply.message.content contains only text and tool_call blocks |

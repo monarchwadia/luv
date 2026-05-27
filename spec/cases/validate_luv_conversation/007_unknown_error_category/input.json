@@ -1,0 +1,1 @@
+{"spec_version":"1.0","nodes":[{"id":"n1","parent_id":null,"message":{"role":"user","content":[{"kind":"text","text":"Hi"}]}},{"id":"n2","parent_id":"n1","message":{"role":"assistant","content":[{"kind":"error","category":"totally_bogus","message":"foo","details":"{}"}]}}]}

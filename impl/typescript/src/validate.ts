@@ -383,11 +383,44 @@ function validateBlockInto(
         message: "tool_result requires text: string",
       });
     }
+  } else if (b.kind === "error") {
+    if (
+      b.category !== "auth" &&
+      b.category !== "rate_limit" &&
+      b.category !== "bad_request" &&
+      b.category !== "content_filter" &&
+      b.category !== "server_error" &&
+      b.category !== "network" &&
+      b.category !== "tool_execution" &&
+      b.category !== "local_validation" &&
+      b.category !== "unknown"
+    ) {
+      errors.push({
+        path: `${basePath}/category`,
+        rule: "shape.block.error",
+        message: "error block requires a known ErrorCategory value",
+      });
+    }
+    if (typeof b.message !== "string") {
+      errors.push({
+        path: `${basePath}/message`,
+        rule: "shape.block.error",
+        message: "error block requires message: string",
+      });
+    }
+    if (typeof b.details !== "string") {
+      errors.push({
+        path: `${basePath}/details`,
+        rule: "shape.block.error",
+        message: "error block requires details: string",
+      });
+    }
   } else {
     errors.push({
       path: `${basePath}/kind`,
       rule: "shape.block.kind",
-      message: "Block.kind must be 'text', 'tool_call', or 'tool_result'",
+      message:
+        "Block.kind must be 'text', 'tool_call', 'tool_result', or 'error'",
     });
   }
 }
@@ -444,13 +477,14 @@ function validateReplyInto(
   if (
     r.finish_reason !== "end_turn" &&
     r.finish_reason !== "max_tokens" &&
-    r.finish_reason !== "content_filter"
+    r.finish_reason !== "content_filter" &&
+    r.finish_reason !== "error"
   ) {
     errors.push({
       path: `${basePath}/finish_reason`,
       rule: "shape.finish_reason",
       message:
-        "FinishReason must be 'end_turn', 'max_tokens', or 'content_filter'",
+        "FinishReason must be 'end_turn', 'max_tokens', 'content_filter', or 'error'",
     });
   }
 }

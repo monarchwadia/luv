@@ -1,6 +1,7 @@
 export type {
   Role,
   Block,
+  ErrorCategory,
   Message,
   Node,
   Conversation,
@@ -12,7 +13,7 @@ export type {
   ValidationResult,
 } from "./types.ts";
 
-export { LUV_SPEC_VERSION } from "./types.ts";
+export { LUV_SPEC_VERSION, ERROR_CATEGORIES, LuvError } from "./types.ts";
 
 export {
   encodeBlock,
