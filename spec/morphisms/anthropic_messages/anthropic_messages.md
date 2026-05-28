@@ -162,12 +162,27 @@ luv `Message` → Anthropic emission:
 | luv message shape | Effect |
 |---|---|
 | `role: "system"`, text content | Contributes its concatenated text to the top-level `system` field. Stripped from the `messages` array. |
-| `role: "user"`, content blocks | Emits an Anthropic `user` message. text blocks map to Anthropic text blocks; tool_result blocks map to Anthropic tool_result blocks. |
-| `role: "assistant"`, content blocks | Emits an Anthropic `assistant` message. text blocks map to Anthropic text blocks; tool_call blocks map to Anthropic tool_use blocks (parsing `args` from string to object). |
+| `role: "user"`, content blocks | Emits an Anthropic `user` message. See content-form rule below. |
+| `role: "assistant"`, content blocks | Emits an Anthropic `assistant` message. See content-form rule below. |
+
+**Content form rule.** An emitted Anthropic message's `content` field
+is either:
+
+- **A string**, if every luv block in the message is a `text` block.
+  The string is the concatenation of all `text` block texts in order.
+  This is the cleaner wire form for typical text-only conversation
+  turns.
+- **A block array**, if any non-text block is present (`tool_call` on
+  assistant, `tool_result` on user). Each luv block becomes the
+  corresponding Anthropic content block: `text` → text, `tool_call`
+  → tool_use (parsing `args` from string to object), `tool_result`
+  → tool_result.
 
 After the per-node walk, consecutive same-role messages are merged by
-concatenating their content arrays. The resulting `messages` array
-alternates user/assistant.
+concatenating their content (string concat if both are strings; block
+concatenation if either is an array, promoting strings to single text
+blocks as needed). The resulting `messages` array alternates
+user/assistant.
 
 luv `system` blocks → Anthropic `system` field:
 
@@ -265,6 +280,7 @@ Anthropic values may collapse to the same canonical output.
 | Multiple system-role messages | Concatenated with `"\n\n"` into a single top-level `system` string; individual message boundaries are lost. |
 | Multiple consecutive same-role non-system messages | Merged into a single Anthropic message whose `content` is the concatenated content blocks; original message boundaries are lost. |
 | Empty text blocks in a message | Contribute the empty string; indistinguishable from absent in concatenation. |
+| Multiple text blocks within a single luv message | Concatenated into a single string when the message has no non-text blocks; block boundaries are lost. Distinguishable only when interleaved with non-text blocks (then the block array form is used and boundaries are preserved). |
 | Forking conversations | Only the branch from the caller-designated head is encoded; sibling branches are not represented. |
 | Node `id` and `parent_id` | Not carried into the Anthropic request; they exist only at the luv side. |
 | `spec_version` | Not carried into the Anthropic request; it is metadata about luv version. |

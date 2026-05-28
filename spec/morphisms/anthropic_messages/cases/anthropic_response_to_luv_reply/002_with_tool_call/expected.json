@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","content":[{"kind":"tool_call","id":"toolu_synth","name":"get_weather","args":"{\"city\":\"Tokyo\"}"}]},"finish_reason":"end_turn"}

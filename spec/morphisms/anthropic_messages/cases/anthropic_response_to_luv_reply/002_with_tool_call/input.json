@@ -1,0 +1,1 @@
+{"id":"msg_synth","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_synth","name":"get_weather","input":{"city":"Tokyo"}}],"model":"claude-3-5-haiku-20241022","stop_reason":"tool_use","stop_sequence":null,"usage":{"input_tokens":50,"output_tokens":20}}

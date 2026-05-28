@@ -1,0 +1,1 @@
+{"status":200,"headers":{"content-type":"application/json"},"body":"{\"id\":\"msg_synth\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"The answer is 4.\"}],\"model\":\"claude-3-5-haiku-20241022\",\"stop_reason\":\"end_turn\",\"stop_sequence\":null,\"usage\":{\"input_tokens\":15,\"output_tokens\":5}}"}

@@ -1,0 +1,1 @@
+{"conversation":{"spec_version":"1.0","nodes":[{"id":"n1","parent_id":null,"message":{"role":"user","content":[{"kind":"text","text":"Hello"}]}}]},"opts":{"model":"claude-3-5-haiku-20241022","max_tokens":2048},"config":{"api_key":"sk-ant-test-123"}}
