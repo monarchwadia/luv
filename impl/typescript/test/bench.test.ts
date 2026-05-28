@@ -24,6 +24,17 @@ import {
   type HTTPResponse,
   type OpenAIClientConfig,
 } from "../src/transport/openai_chat.js";
+import {
+  luv_conversation_to_anthropic_request,
+  anthropic_response_to_luv_reply,
+  anthropic_stream_to_luv_stream,
+} from "../src/morphisms/anthropic_messages.js";
+import {
+  luv_send_to_anthropic_http_request,
+  anthropic_http_response_to_luv_reply,
+  anthropic_http_stream_to_luv_stream,
+  type AnthropicClientConfig,
+} from "../src/transport/anthropic_messages.js";
 
 function encodeHTTPRequest(req: HTTPRequest): unknown {
   return {
@@ -90,6 +101,46 @@ const arrows: Record<string, ArrowFn> = {
     stringify(
       encodeStreamReply(
         openai_http_stream_to_luv_stream(input as HTTPResponse),
+      ),
+    ),
+
+  luv_conversation_to_anthropic_request: (input) => {
+    const w = input as { conversation: never; opts: never };
+    return stringify(
+      luv_conversation_to_anthropic_request(w.conversation, w.opts),
+    );
+  },
+
+  anthropic_response_to_luv_reply: (input) =>
+    stringify(encodeReply(anthropic_response_to_luv_reply(input))),
+
+  anthropic_stream_to_luv_stream: (input) =>
+    stringify(
+      encodeStreamReply(anthropic_stream_to_luv_stream(input as never)),
+    ),
+
+  luv_send_to_anthropic_http_request: (input) => {
+    const w = input as {
+      conversation: never;
+      opts: never;
+      config: AnthropicClientConfig;
+    };
+    return stringify(
+      encodeHTTPRequest(
+        luv_send_to_anthropic_http_request(w.conversation, w.opts, w.config),
+      ),
+    );
+  },
+
+  anthropic_http_response_to_luv_reply: (input) =>
+    stringify(
+      encodeReply(anthropic_http_response_to_luv_reply(input as HTTPResponse)),
+    ),
+
+  anthropic_http_stream_to_luv_stream: (input) =>
+    stringify(
+      encodeStreamReply(
+        anthropic_http_stream_to_luv_stream(input as HTTPResponse),
       ),
     ),
 };

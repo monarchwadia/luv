@@ -16,10 +16,20 @@
       "import": "./dist/transport/openai_chat.js",
       "default": "./dist/transport/openai_chat.js"
     },
+    "./anthropic": {
+      "types": "./dist/transport/anthropic_messages.d.ts",
+      "import": "./dist/transport/anthropic_messages.js",
+      "default": "./dist/transport/anthropic_messages.js"
+    },
     "./morphisms/openai_chat": {
       "types": "./dist/morphisms/openai_chat.d.ts",
       "import": "./dist/morphisms/openai_chat.js",
       "default": "./dist/morphisms/openai_chat.js"
+    },
+    "./morphisms/anthropic_messages": {
+      "types": "./dist/morphisms/anthropic_messages.d.ts",
+      "import": "./dist/morphisms/anthropic_messages.js",
+      "default": "./dist/morphisms/anthropic_messages.js"
     }
   },
   "files": [
@@ -44,6 +54,7 @@
     "ai",
     "openai",
     "anthropic",
+    "claude",
     "agents",
     "agent",
     "chat",
