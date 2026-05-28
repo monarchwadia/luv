@@ -13,7 +13,7 @@ import {
   anthropicClient,
   LuvError,
 } from "./luv.js";
-import { makeHandlers, NEEDS_APPROVAL, providerTools } from "./tools.js";
+import { makeHandlers, providerTools } from "./tools.js";
 import { newId, nowIso } from "./state.js";
 
 function makeClient(agent, apiKey) {
@@ -52,7 +52,6 @@ function updateNode(node, content, agent) {
  * @param {string} opts.apiKey
  * @param {function} opts.onNodeAppended — (node) => void; new node visible
  * @param {function} opts.onNodeUpdated — (node) => void; existing node changed
- * @param {function} opts.askApproval — async (toolName, args) => bool
  * @param {function} opts.rootDirGetter — () => FileSystemDirectoryHandle
  * @param {function} opts.setStatus — (string) => void
  * @param {AbortSignal} [opts.signal]
@@ -66,7 +65,6 @@ export async function agentStep(opts) {
     apiKey,
     onNodeAppended,
     onNodeUpdated,
-    askApproval,
     rootDirGetter,
     setStatus,
     signal,
@@ -146,13 +144,6 @@ export async function agentStep(opts) {
       const args = JSON.parse(tc.args);
       if (!handlers) {
         result = "error: no workspace folder open";
-      } else if (NEEDS_APPROVAL.has(tc.name)) {
-        const ok = await askApproval(tc.name, args);
-        if (!ok) {
-          result = `user rejected the call to ${tc.name}`;
-        } else {
-          result = await handlers[tc.name](args);
-        }
       } else if (!(tc.name in handlers)) {
         result = `error: unknown tool '${tc.name}'`;
       } else {

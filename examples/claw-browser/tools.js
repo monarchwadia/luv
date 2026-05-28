@@ -42,8 +42,6 @@ export const TOOL_DEFS = [
   },
 ];
 
-export const NEEDS_APPROVAL = new Set(["write_file"]);
-
 async function resolvePath(rootDir, rel, { createDirs = false } = {}) {
   if (!rootDir) throw new Error("No workspace open.");
   const segments = (rel ?? "")

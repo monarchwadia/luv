@@ -18,8 +18,9 @@ write real files; it persists all state to IndexedDB and syncs it to a
     its own until it finishes or hits the turn limit.
 - **Switch modes at any time.** auto ↔ claw. Switching to claw asks for
   a goal; switching to auto stops a running claw.
-- **Three file tools:** `list_files`, `read_file`, `write_file`
-  (write asks for approval).
+- **Three file tools:** `list_files`, `read_file`, `write_file`. Tools
+  run without per-call approval — the browser's File System Access
+  permission grant is the gate.
 - **Live streaming** of replies, token by token.
 - **Persistence:** every change is saved to IndexedDB (debounced ~300ms)
   and synced to `<folder>/.luv-workspace.json` (debounced ~1.5s).
@@ -101,8 +102,8 @@ The browser is the sandbox. The agents can do exactly what the user
 granted via File System Access — typically one folder, revocable at any
 time from browser settings. API keys live only in localStorage and
 memory; they are never written into the workspace file that syncs to
-disk. The `write_file` approval prompt is a UX safeguard, not the
-security boundary — the sandbox is.
+disk. There is no per-tool approval prompt: the one-time folder grant
+is the boundary, and it is enforced by the browser, not by the app.
 
 ## Current limitations
 

@@ -54,12 +54,6 @@ const $openFolder = $("open-folder");
 const $openaiKey = $("openai-key");
 const $anthropicKey = $("anthropic-key");
 
-const $approval = $("approval");
-const $approvalTool = $("approval-tool");
-const $approvalArgs = $("approval-args");
-const $approvalApprove = $("approval-approve");
-const $approvalReject = $("approval-reject");
-
 const $newDlg = $("new-agent-dialog");
 const $newName = $("new-agent-name");
 const $newProvider = $("new-agent-provider");
@@ -481,25 +475,6 @@ function stopAgent(agent) {
   if (ctl) ctl.abort();
 }
 
-// ---------- Approval modal ----------
-
-function askApproval(toolName, args) {
-  return new Promise((resolve) => {
-    $approvalTool.textContent = `Tool: ${toolName}`;
-    $approvalArgs.textContent = JSON.stringify(args, null, 2);
-    $approval.showModal();
-    const onApprove = () => { cleanup(); resolve(true); };
-    const onReject = () => { cleanup(); resolve(false); };
-    const cleanup = () => {
-      $approvalApprove.removeEventListener("click", onApprove);
-      $approvalReject.removeEventListener("click", onReject);
-      $approval.close();
-    };
-    $approvalApprove.addEventListener("click", onApprove);
-    $approvalReject.addEventListener("click", onReject);
-  });
-}
-
 // ---------- Send (auto mode) ----------
 
 async function sendUserMessage(text) {
@@ -532,7 +507,6 @@ async function sendUserMessage(text) {
         apiKey: apiKeys[a.provider],
         onNodeAppended: (n) => { updateNodeInDom(n); touch(); },
         onNodeUpdated: (n) => { updateNodeInDom(n); touch(); },
-        askApproval,
         rootDirGetter: () => rootDir,
         setStatus,
         signal: ctl.signal,
@@ -580,7 +554,6 @@ async function startClaw(agent, goal, maxTurns) {
       apiKey: apiKeys[agent.provider],
       onNodeAppended: (n) => { updateNodeInDom(n); touch(); },
       onNodeUpdated: (n) => { updateNodeInDom(n); touch(); },
-      askApproval,
       rootDirGetter: () => rootDir,
       setStatus,
       signal: ctl.signal,
