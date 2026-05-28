@@ -24,6 +24,14 @@ write real files; it persists all state to IndexedDB and syncs it to a
   still type to it; messages wake it (or queue until the next tick).
 - **Switch modes at any time.** auto ↔ claw. Switching to claw asks for
   a goal; switching to auto stops a running claw.
+- **Superadmin agents.** Set any agent's role to `superadmin` (in its
+  header) and it gains tools to manage the workspace itself: list,
+  create, configure, deprecate/reactivate, start/stop, and **message**
+  any other agent. Messaging an idle agent runs it and returns the
+  reply; messaging a running claw just delivers (it replies in its own
+  thread). A superadmin can't deprecate, stop, or message itself, and
+  can't grant anyone (including itself) the superadmin role — that stays
+  a human decision in the UI.
 - **Three file tools:** `list_files`, `read_file`, `write_file`. Tools
   run without per-call approval — the browser's File System Access
   permission grant is the gate.
@@ -76,6 +84,7 @@ A single workspace state object (versioned) holds everything:
       "name": "coder",
       "mode": "auto",            // or "claw"
       "status": "active",        // or "deprecated"
+      "role": "member",          // or "superadmin"
       "provider": "openai",
       "model": "gpt-4o-mini",
       "conversation": { "spec_version": "1.0", "nodes": [ /* luv */ ] },
@@ -115,6 +124,11 @@ time from browser settings. API keys live only in localStorage and
 memory; they are never written into the workspace file that syncs to
 disk. There is no per-tool approval prompt: the one-time folder grant
 is the boundary, and it is enforced by the browser, not by the app.
+
+A superadmin's reach stops at the workspace: its tools only manage the
+other agents in this same tab and the same granted folder. It gains no
+new system access, and the superadmin role can only be granted by a
+human in the UI — agents cannot promote themselves or each other.
 
 ## Current limitations
 

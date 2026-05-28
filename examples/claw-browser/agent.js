@@ -24,8 +24,12 @@ function makeClient(agent, apiKey) {
   return anthropicClient({ api_key: apiKey });
 }
 
-function makeSendOpts(agent) {
-  const base = { model: agent.model, tools: providerTools(agent.provider) };
+function makeSendOpts(agent, extraToolDefs) {
+  const tools = providerTools(agent.provider);
+  const base = {
+    model: agent.model,
+    tools: extraToolDefs?.length ? [...tools, ...extraToolDefs] : tools,
+  };
   if (agent.provider === "anthropic") base.max_tokens = 4096;
   return base;
 }
@@ -71,10 +75,12 @@ export async function agentStep(opts) {
     rootDirGetter,
     setStatus,
     signal,
+    extraToolDefs,
+    adminHandlers,
   } = opts;
 
   const client = makeClient(agent, apiKey);
-  const sendOpts = makeSendOpts(agent);
+  const sendOpts = makeSendOpts(agent, extraToolDefs);
 
   // 1. Build assistant node placeholder.
   const assistantNode = appendNode(agent, "assistant", []);
@@ -131,7 +137,9 @@ export async function agentStep(opts) {
   }
 
   const rootDir = rootDirGetter();
-  const handlers = rootDir ? makeHandlers(rootDir) : null;
+  const fsHandlers = rootDir ? makeHandlers(rootDir) : null;
+  const handlers = { ...(fsHandlers ?? {}), ...(adminHandlers ?? {}) };
+  const hasAnyHandlers = fsHandlers || adminHandlers;
   const resultBlocks = [];
   for (const tc of toolCalls) {
     if (signal?.aborted) {
@@ -145,10 +153,10 @@ export async function agentStep(opts) {
     let result;
     try {
       const args = JSON.parse(tc.args);
-      if (!handlers) {
-        result = "error: no workspace folder open";
-      } else if (!(tc.name in handlers)) {
-        result = `error: unknown tool '${tc.name}'`;
+      if (!(tc.name in handlers)) {
+        result = hasAnyHandlers
+          ? `error: unknown tool '${tc.name}'`
+          : "error: no workspace folder open";
       } else {
         result = await handlers[tc.name](args);
       }

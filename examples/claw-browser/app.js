@@ -16,6 +16,7 @@ import {
 } from "./state.js";
 
 import { agentStep, runClaw, createClawController } from "./agent.js";
+import { ADMIN_TOOL_DEFS, formatTools } from "./tools.js";
 
 // ---------- Global state ----------
 
@@ -24,7 +25,10 @@ let rootDir = null;
 let apiKeys = { openai: "", anthropic: "" };
 
 // Active task tracking: per-agent AbortController for cancellation.
-const runningAgents = new Map(); // agentId -> AbortController
+const runningAgents = new Map(); // agentId -> AbortController | ClawController
+// Agents currently being run synchronously by a superadmin's message_agent
+// tool. Used to prevent reentrant runs (admin-messages-admin loops).
+const syncRunning = new Set();
 
 // API keys live in localStorage + memory only — never written to the
 // workspace state object, so they never reach the on-disk file.
@@ -143,6 +147,13 @@ function renderAgentCard(agent) {
   mode.textContent = agent.mode;
   meta.appendChild(mode);
 
+  if ((agent.role ?? "member") === "superadmin") {
+    const role = document.createElement("span");
+    role.className = "role-badge";
+    role.textContent = "admin";
+    meta.appendChild(role);
+  }
+
   const status = document.createElement("span");
   const running = runningAgents.has(agent.id);
   let cls;
@@ -242,6 +253,27 @@ function renderAgentHeader() {
   });
   $agentHeader.appendChild(makeLabel("model"));
   $agentHeader.appendChild(modelInput);
+
+  // Role (member / superadmin)
+  const roleSel = document.createElement("select");
+  roleSel.innerHTML = `
+    <option value="member">member</option>
+    <option value="superadmin">superadmin</option>
+  `;
+  roleSel.value = a.role ?? "member";
+  roleSel.addEventListener("change", () => {
+    a.role = roleSel.value;
+    a.updated_at = nowIso();
+    touch();
+    renderSidebar();
+    setStatus(
+      a.role === "superadmin"
+        ? `${a.name} is now a superadmin — it can manage, configure, and message other agents.`
+        : `${a.name} is now a member.`,
+    );
+  });
+  $agentHeader.appendChild(makeLabel("role"));
+  $agentHeader.appendChild(roleSel);
 
   // Spacer
   const spacer = document.createElement("span");
@@ -566,6 +598,7 @@ async function sendUserMessage(text) {
         rootDirGetter: () => rootDir,
         setStatus,
         signal: ctl.signal,
+        ...adminExtrasFor(a),
       });
       if (done) break;
     }
@@ -612,6 +645,7 @@ async function startClaw(agent, goal) {
       setStatus,
       onParked: () => { touch(); renderSidebar(); renderInputRow(); },
       onResumed: () => { renderSidebar(); renderInputRow(); },
+      ...adminExtrasFor(agent),
     });
   } finally {
     runningAgents.delete(agent.id);
@@ -661,6 +695,218 @@ $cfgSave.addEventListener("click", () => {
   setStatus(`${agent.name}: claw config saved (applies at next park).`);
   render();
 });
+
+// ---------- Superadmin tools ----------
+
+// Tool defs + handlers a superadmin agent gets on top of the file tools.
+// Members get nothing extra.
+function adminExtrasFor(agent) {
+  if ((agent.role ?? "member") !== "superadmin") {
+    return { extraToolDefs: [], adminHandlers: null };
+  }
+  return {
+    extraToolDefs: formatTools(ADMIN_TOOL_DEFS, agent.provider),
+    adminHandlers: makeAdminHandlers(agent),
+  };
+}
+
+function summarizeAgent(a) {
+  return {
+    id: a.id,
+    name: a.name,
+    role: a.role ?? "member",
+    mode: a.mode,
+    status: a.status,
+    provider: a.provider,
+    model: a.model,
+    running: runningAgents.has(a.id),
+    claw_state: a.claw_state ?? null,
+    goal: a.claw_goal ?? null,
+    messages: a.conversation.nodes.length,
+  };
+}
+
+function makeAdminHandlers(selfAgent) {
+  return {
+    async list_agents() {
+      return JSON.stringify(state.agents.map(summarizeAgent), null, 2);
+    },
+
+    async create_agent(args) {
+      const provider = args.provider === "anthropic" ? "anthropic" : "openai";
+      const a = newAgent({
+        name: args.name || `agent ${state.agents.length + 1}`,
+        provider,
+        model: args.model || defaultModelFor(provider),
+      });
+      if (args.mode === "claw") a.mode = "claw";
+      state.agents.push(a);
+      touch();
+      render();
+      return `created agent ${a.id} (${a.name}), ${a.provider}/${a.model}, mode ${a.mode}.`;
+    },
+
+    async configure_agent(args) {
+      const t = getAgent(state, args.agent_id);
+      if (!t) return `error: no agent ${args.agent_id}`;
+      if (typeof args.name === "string") t.name = args.name;
+      if (args.provider === "openai" || args.provider === "anthropic") {
+        t.provider = args.provider;
+        if (!args.model) t.model = defaultModelFor(t.provider);
+      }
+      if (typeof args.model === "string") t.model = args.model;
+      if (args.mode === "auto" || args.mode === "claw") {
+        if (runningAgents.has(t.id)) stopAgent(t);
+        t.mode = args.mode;
+      }
+      if (args.claw_config && typeof args.claw_config === "object") {
+        const cur = clawConfig(t);
+        const inc = args.claw_config;
+        t.claw_config = {
+          triggers: { ...cur.triggers, ...(inc.triggers ?? {}) },
+          poll_interval_sec: inc.poll_interval_sec ?? cur.poll_interval_sec,
+          max_work_turns: inc.max_work_turns ?? cur.max_work_turns,
+        };
+      }
+      t.updated_at = nowIso();
+      touch();
+      render();
+      return `configured ${t.id}: ${JSON.stringify(summarizeAgent(t))}`;
+    },
+
+    async deprecate_agent(args) {
+      const t = getAgent(state, args.agent_id);
+      if (!t) return `error: no agent ${args.agent_id}`;
+      if (t.id === selfAgent.id) return "error: a superadmin cannot deprecate itself";
+      deprecateAgent(t);
+      return `deprecated ${t.id} (${t.name}).`;
+    },
+
+    async reactivate_agent(args) {
+      const t = getAgent(state, args.agent_id);
+      if (!t) return `error: no agent ${args.agent_id}`;
+      reactivateAgent(t);
+      return `reactivated ${t.id} (${t.name}).`;
+    },
+
+    async start_claw(args) {
+      const t = getAgent(state, args.agent_id);
+      if (!t) return `error: no agent ${args.agent_id}`;
+      if (t.status === "deprecated") return `error: ${t.id} is deprecated; reactivate first`;
+      if (runningAgents.has(t.id)) return `error: ${t.id} is already running`;
+      if (!args.goal) return "error: goal required";
+      if (!apiKeys[t.provider]) return `error: no ${t.provider} API key set; cannot start ${t.id}`;
+      t.mode = "claw";
+      t.updated_at = nowIso();
+      touch();
+      startClaw(t, args.goal); // fire-and-forget daemon
+      render();
+      return `started claw ${t.id} (${t.name}) toward its goal.`;
+    },
+
+    async stop_agent(args) {
+      const t = getAgent(state, args.agent_id);
+      if (!t) return `error: no agent ${args.agent_id}`;
+      if (t.id === selfAgent.id) return "error: cannot stop yourself";
+      if (!runningAgents.has(t.id)) return `error: ${t.id} is not running`;
+      stopAgent(t);
+      return `stopping ${t.id} (${t.name}).`;
+    },
+
+    async read_agent_conversation(args) {
+      const t = getAgent(state, args.agent_id);
+      if (!t) return `error: no agent ${args.agent_id}`;
+      const n = Math.max(1, Math.min(args.last_n || 20, 200));
+      const nodes = t.conversation.nodes.slice(-n);
+      const lines = nodes.map((node) => {
+        const parts = node.message.content
+          .map((b) => {
+            if (b.kind === "text") return b.text;
+            if (b.kind === "tool_call") return `[tool_call ${b.name}(${b.args})]`;
+            if (b.kind === "tool_result") return `[tool_result ${b.text}]`;
+            if (b.kind === "error") return `[error ${b.category}: ${b.message}]`;
+            return "";
+          })
+          .join(" ");
+        return `${node.message.role}: ${parts}`;
+      });
+      return lines.join("\n") || "(empty conversation)";
+    },
+
+    async message_agent(args) {
+      const t = getAgent(state, args.agent_id);
+      if (!t) return `error: no agent ${args.agent_id}`;
+      if (t.id === selfAgent.id) return "error: cannot message yourself";
+      if (t.status === "deprecated") return `error: ${t.id} is deprecated`;
+      if (!args.message) return "error: message required";
+
+      // Append the message to the target's conversation.
+      const node = {
+        id: newId("n"),
+        parent_id: t.head,
+        message: {
+          role: "user",
+          content: [{ kind: "text", text: `[from ${selfAgent.name}] ${args.message}` }],
+        },
+      };
+      t.conversation.nodes.push(node);
+      t.head = node.id;
+      t.updated_at = nowIso();
+      if (t.id === state.active_agent_id) updateNodeInDom(node);
+      touch();
+
+      // Target already running: deliver only (wake a parked claw if it
+      // accepts message wakes). It replies in its own conversation.
+      if (runningAgents.has(t.id)) {
+        const ctl = runningAgents.get(t.id);
+        if (t.mode === "claw" && clawConfig(t).triggers.user_message && ctl.wake) {
+          ctl.wake("user_message");
+          return `delivered to running claw ${t.id}; it will reply in its own conversation.`;
+        }
+        return `delivered to running agent ${t.id}; it will reply in its own conversation.`;
+      }
+      if (syncRunning.has(t.id)) {
+        return `delivered to ${t.id} (currently busy); it will see the message on its next turn.`;
+      }
+      if (!apiKeys[t.provider]) {
+        return `delivered, but no ${t.provider} API key is set, so ${t.id} cannot reply now.`;
+      }
+
+      // Idle target: run it synchronously (bounded) and return its reply.
+      syncRunning.add(t.id);
+      const ctl = new AbortController();
+      const before = t.conversation.nodes.length;
+      try {
+        const cap = Math.min(clawConfig(t).max_work_turns, 25);
+        for (let i = 0; i < cap; i++) {
+          if (ctl.signal.aborted) break;
+          const done = await agentStep({
+            agent: t,
+            apiKey: apiKeys[t.provider],
+            onNodeAppended: (nn) => { if (t.id === state.active_agent_id) updateNodeInDom(nn); touch(); },
+            onNodeUpdated: (nn) => { if (t.id === state.active_agent_id) updateNodeInDom(nn); touch(); },
+            rootDirGetter: () => rootDir,
+            setStatus,
+            signal: ctl.signal,
+            ...adminExtrasFor(t),
+          });
+          if (done) break;
+        }
+      } finally {
+        syncRunning.delete(t.id);
+        render();
+      }
+
+      const reply = t.conversation.nodes
+        .slice(before)
+        .filter((nd) => nd.message.role === "assistant")
+        .flatMap((nd) => nd.message.content.filter((b) => b.kind === "text").map((b) => b.text))
+        .join("\n")
+        .trim();
+      return `reply from ${t.name} (${t.id}):\n${reply || "(no text reply)"}`;
+    },
+  };
+}
 
 // ---------- New agent dialog ----------
 

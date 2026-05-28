@@ -14,6 +14,7 @@
 // {
 //   id, name, mode ("auto" | "claw"),
 //   status ("active" | "deprecated"),
+//   role ("member" | "superadmin"),  // superadmin can manage other agents
 //   provider ("openai" | "anthropic"),
 //   model: string,
 //   created_at, updated_at,
@@ -66,6 +67,7 @@ export function newAgent({ name, provider, model }) {
     name,
     mode: "auto",
     status: "active",
+    role: "member",
     provider,
     model,
     created_at: now,
