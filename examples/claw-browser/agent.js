@@ -1,12 +1,15 @@
 // Agent loop primitives.
 //
-// runAuto(agent, ...) — single send/receive cycle (with tool execution
-// for any tool_calls the model returned). For interactive mode: user
-// types one message, we call runAuto, it returns when done.
+// agentStep(opts) — single send/receive cycle (with tool execution for
+// any tool_calls the model returned). For interactive mode: user types
+// one message, we call agentStep, it returns when done.
 //
-// runClaw(agent, ...) — autonomous loop. Caller passes a goal; we
-// prepend it as a user message, then iterate until: no tool_calls
-// emitted OR maxTurns hit OR the caller aborts via the AbortSignal.
+// runClaw(opts) — continuously-on autonomous daemon. Caller passes a goal
+// and a ClawController. We append the goal, then loop forever: a *work*
+// phase (step until the model stops calling tools) followed by a *park*
+// phase (idle until a wake trigger fires). Triggers are per-agent
+// (claw_config): a new user message, a timer heartbeat, and/or a
+// workspace file change. The loop only ends when the controller aborts.
 
 import {
   openaiClient,
@@ -14,7 +17,7 @@ import {
   LuvError,
 } from "./luv.js";
 import { makeHandlers, providerTools } from "./tools.js";
-import { newId, nowIso } from "./state.js";
+import { newId, nowIso, clawConfig } from "./state.js";
 
 function makeClient(agent, apiKey) {
   if (agent.provider === "openai") return openaiClient({ api_key: apiKey });
@@ -161,43 +164,227 @@ export async function agentStep(opts) {
 }
 
 /**
- * Run an autonomous (claw) loop. Appends the goal as a user message
- * first, then iterates `agentStep` until termination.
+ * A claw controller wraps an AbortController with a `wake` primitive.
+ * `abort()` stops the daemon entirely; `wake(reason)` resumes it from a
+ * park (used when a new user message arrives). Timer / file-change wakes
+ * are handled internally by parkUntilWake.
  */
-export async function runClaw(opts) {
-  const { agent, goal, maxTurns = 50, signal, onNodeAppended, setStatus } = opts;
-
-  // Append the goal as a user message at the head.
-  const goalNode = {
-    id: newId("n"),
-    parent_id: agent.head,
-    message: {
-      role: "user",
-      content: [
-        {
-          kind: "text",
-          text: `[claw goal] ${goal}\n\nWork toward this goal autonomously. Call tools as needed. When complete (or you've hit a dead end), respond with a final text message and no tool calls.`,
-        },
-      ],
+export function createClawController(agent) {
+  const ac = new AbortController();
+  let parkResolve = null; // set only while parked
+  return {
+    agent,
+    get signal() {
+      return ac.signal;
+    },
+    abort() {
+      ac.abort();
+    },
+    isParked() {
+      return parkResolve !== null;
+    },
+    wake(reason = "user_message") {
+      if (parkResolve) parkResolve(reason);
+    },
+    _setPark(fn) {
+      parkResolve = fn;
     },
   };
-  agent.conversation.nodes.push(goalNode);
-  agent.head = goalNode.id;
-  agent.claw_goal = goal;
-  agent.updated_at = nowIso();
-  onNodeAppended(goalNode);
+}
 
-  for (let turn = 0; turn < maxTurns; turn++) {
-    if (signal?.aborted) {
-      setStatus?.("claw stopped by user.");
-      return;
-    }
-    setStatus?.(`claw turn ${turn + 1} / ${maxTurns}...`);
-    const done = await agentStep(opts);
-    if (done) {
-      setStatus?.(`claw finished after ${turn + 1} turn(s).`);
-      return;
-    }
+/**
+ * Continuously-on claw daemon. Runs until `controller.abort()`.
+ *
+ * @param {object} opts
+ * @param {object} opts.agent
+ * @param {string} [opts.goal] — appended as the opening user message
+ * @param {object} opts.controller — from createClawController
+ * @param {string} opts.apiKey
+ * @param {function} opts.onNodeAppended
+ * @param {function} opts.onNodeUpdated
+ * @param {function} opts.rootDirGetter
+ * @param {function} opts.setStatus
+ * @param {function} [opts.onParked]
+ * @param {function} [opts.onResumed]
+ */
+export async function runClaw(opts) {
+  const { agent, goal, controller, onNodeAppended, setStatus } = opts;
+  const signal = controller.signal;
+
+  if (goal) {
+    const goalNode = {
+      id: newId("n"),
+      parent_id: agent.head,
+      message: {
+        role: "user",
+        content: [
+          {
+            kind: "text",
+            text: `[claw goal] ${goal}\n\nWork toward this goal autonomously. Call tools as needed. When you have nothing left to do right now, respond with a short status and no tool calls — you'll be re-engaged when there's new work.`,
+          },
+        ],
+      },
+    };
+    agent.conversation.nodes.push(goalNode);
+    agent.head = goalNode.id;
+    agent.claw_goal = goal;
+    agent.updated_at = nowIso();
+    onNodeAppended(goalNode);
   }
-  setStatus?.(`claw hit max turns (${maxTurns}); stopping.`);
+
+  const cfg = clawConfig(agent);
+  const maxWork = cfg.max_work_turns;
+
+  while (!signal.aborted) {
+    // --- Work phase: step until the model stops calling tools. ---
+    agent.claw_state = "running";
+    let work = 0;
+    while (!signal.aborted) {
+      setStatus?.(`${agent.name}: working (turn ${work + 1})...`);
+      const done = await agentStep({ ...opts, signal });
+      work++;
+      if (done) break; // natural end — no more tool calls
+      if (work >= maxWork) {
+        setStatus?.(`${agent.name}: hit ${maxWork} work turns; parking.`);
+        break;
+      }
+    }
+    if (signal.aborted) break;
+
+    // --- Park phase: idle until a wake trigger fires. ---
+    agent.claw_state = "parked";
+    agent.updated_at = nowIso();
+    opts.onParked?.();
+    setStatus?.(`${agent.name}: parked — ${describeTriggers(cfg)}.`);
+
+    const reason = await parkUntilWake(controller, opts, cfg);
+    if (reason === "abort" || signal.aborted) break;
+
+    agent.claw_state = "running";
+    opts.onResumed?.(reason);
+    appendWakeNudge(agent, reason, agent.claw_goal, onNodeAppended);
+  }
+
+  agent.claw_state = "stopped";
+  setStatus?.(`${agent.name}: claw stopped.`);
+}
+
+// Wait until one of the agent's enabled triggers fires. Resolves with the
+// reason ("user_message" | "timer" | "file_change" | "abort").
+function parkUntilWake(controller, opts, cfg) {
+  const signal = controller.signal;
+  const intervalMs = Math.max(2, cfg.poll_interval_sec) * 1000;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    let timerId = null;
+    let pollId = null;
+    let lastSnap = null;
+
+    const finish = (reason) => {
+      if (settled) return;
+      settled = true;
+      controller._setPark(null);
+      signal.removeEventListener("abort", onAbort);
+      if (timerId) clearTimeout(timerId);
+      if (pollId) clearInterval(pollId);
+      resolve(reason);
+    };
+
+    const onAbort = () => finish("abort");
+    if (signal.aborted) return finish("abort");
+    signal.addEventListener("abort", onAbort);
+
+    // External wake (a new user message) calls controller.wake() → finish.
+    controller._setPark(finish);
+
+    if (cfg.triggers.timer) {
+      timerId = setTimeout(() => finish("timer"), intervalMs);
+    }
+
+    if (cfg.triggers.file_change) {
+      snapshotWorkspace(opts.rootDirGetter?.()).then((s) => {
+        if (lastSnap === null) lastSnap = s;
+      });
+      pollId = setInterval(async () => {
+        try {
+          const s = await snapshotWorkspace(opts.rootDirGetter?.());
+          if (lastSnap !== null && s !== lastSnap) {
+            lastSnap = s;
+            finish("file_change");
+          } else {
+            lastSnap = s;
+          }
+        } catch {
+          /* transient FS error — try again next tick */
+        }
+      }, intervalMs);
+    }
+  });
+}
+
+// On wake, nudge the model so it knows why it was re-engaged. A
+// user-message wake needs no nudge (the message is already in the convo).
+function appendWakeNudge(agent, reason, goal, onNodeAppended) {
+  let text;
+  if (reason === "timer") {
+    text =
+      `[heartbeat ${nowIso()}] Re-check your goal and the workspace. ` +
+      `If there is new work toward your goal, do it now by calling tools. ` +
+      `If there is nothing to do, reply with a short status and no tool calls to keep waiting.`;
+  } else if (reason === "file_change") {
+    text =
+      `[workspace changed ${nowIso()}] Files in the workspace changed on disk. ` +
+      `Inspect what changed (list_files / read_file) and, if it is relevant to your goal` +
+      (goal ? ` "${goal}"` : "") +
+      `, act on it. Otherwise reply briefly with no tool calls.`;
+  } else {
+    return; // user_message: already appended by the caller
+  }
+
+  const node = {
+    id: newId("n"),
+    parent_id: agent.head,
+    message: { role: "user", content: [{ kind: "text", text }] },
+  };
+  agent.conversation.nodes.push(node);
+  agent.head = node.id;
+  agent.updated_at = nowIso();
+  onNodeAppended?.(node);
+}
+
+function describeTriggers(cfg) {
+  const t = cfg.triggers;
+  const on = [];
+  if (t.user_message) on.push("messages");
+  if (t.timer) on.push(`timer ${cfg.poll_interval_sec}s`);
+  if (t.file_change) on.push("file changes");
+  return on.length ? `wakes on ${on.join(", ")}` : "no triggers (idle until stopped)";
+}
+
+// Cheap fingerprint of the workspace tree (name:size:mtime), used to
+// detect on-disk changes. Skips heavy/noisy dirs and hidden entries.
+const SNAP_SKIP = new Set(["node_modules", ".luv-workspace.json"]);
+async function snapshotWorkspace(rootDir, depth = 0) {
+  if (!rootDir || depth > 6) return "";
+  const parts = [];
+  try {
+    for await (const [name, handle] of rootDir.entries()) {
+      if (name.startsWith(".") || SNAP_SKIP.has(name)) continue;
+      if (handle.kind === "file") {
+        try {
+          const f = await handle.getFile();
+          parts.push(`${name}:${f.size}:${f.lastModified}`);
+        } catch {
+          /* unreadable file — ignore */
+        }
+      } else {
+        parts.push(`${name}/{${await snapshotWorkspace(handle, depth + 1)}}`);
+      }
+    }
+  } catch {
+    /* unreadable dir — ignore */
+  }
+  parts.sort();
+  return parts.join("|");
 }

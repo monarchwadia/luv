@@ -94,6 +94,7 @@
     }
     .status-badge.idle { background: var(--bg-4); color: var(--fg-dim); }
     .status-badge.running { background: var(--ok); color: #fff; }
+    .status-badge.parked { background: var(--accent-2); color: #fff; }
     .status-badge.deprecated { background: var(--warn); color: #fff; }
 
     .agent-header {
@@ -187,6 +188,11 @@
     dialog h3 { margin: 0 0 8px 0; }
     dialog p { margin: 4px 0; color: var(--fg-dim); font-size: 13px; }
     dialog label { display: block; font-size: 12px; color: var(--fg-dim); margin: 8px 0 4px; }
+    dialog label.check {
+      display: flex; align-items: center; gap: 8px; color: var(--fg);
+      font-size: 13px; margin: 6px 0;
+    }
+    dialog label.check input { width: auto; }
     dialog input, dialog select, dialog textarea {
       width: 100%;
       background: var(--bg-3); color: var(--fg);
@@ -257,14 +263,28 @@
 
   <dialog id="claw-goal-dialog">
     <h3>Switch to claw mode</h3>
-    <p>Give the agent a goal. It will run autonomously, calling tools until done or out of turns.</p>
+    <p>Give the agent a goal. It runs autonomously, then parks and stays on — waking on the triggers set in claw config.</p>
     <label>Goal</label>
-    <textarea id="claw-goal-text" placeholder="e.g., add unit tests for utils.js and run them"></textarea>
-    <label>Max turns</label>
-    <input id="claw-max-turns" type="number" value="20" min="1" max="200" />
+    <textarea id="claw-goal-text" placeholder="e.g., keep the README in sync with the code as it changes"></textarea>
     <div class="actions">
       <button id="claw-cancel">cancel</button>
       <button id="claw-start" class="primary">start claw</button>
+    </div>
+  </dialog>
+
+  <dialog id="claw-config-dialog">
+    <h3>Claw wake triggers</h3>
+    <p>When a claw finishes its current work it parks and stays on. Choose what wakes it back up. It can have more than one.</p>
+    <label class="check"><input id="cfg-trig-user" type="checkbox" /> new user message</label>
+    <label class="check"><input id="cfg-trig-timer" type="checkbox" /> timer heartbeat</label>
+    <label class="check"><input id="cfg-trig-file" type="checkbox" /> workspace file change</label>
+    <label>poll interval, seconds (timer &amp; file checks)</label>
+    <input id="cfg-interval" type="number" value="30" min="2" max="3600" />
+    <label>max work turns before a forced park</label>
+    <input id="cfg-max-work" type="number" value="50" min="1" max="500" />
+    <div class="actions">
+      <button id="cfg-cancel">cancel</button>
+      <button id="cfg-save" class="primary">save</button>
     </div>
   </dialog>
 

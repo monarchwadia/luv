@@ -20,7 +20,15 @@
 //   conversation: luv Conversation,
 //   head: node id or null,
 //   claw_goal?: string,
-//   claw_max_turns?: number,
+//   claw_config?: ClawConfig,   // wake triggers for continuously-on claw
+//   claw_state?: "running" | "parked" | "stopped",  // runtime status
+// }
+//
+// ClawConfig:
+// {
+//   triggers: { user_message: bool, timer: bool, file_change: bool },
+//   poll_interval_sec: number,   // cadence for timer + file_change checks
+//   max_work_turns: number,      // safety cap on tool turns before a forced park
 // }
 
 export const STATE_VERSION = 1;
@@ -64,6 +72,29 @@ export function newAgent({ name, provider, model }) {
     updated_at: now,
     conversation: { spec_version: "1.0", nodes: [] },
     head: null,
+    claw_config: defaultClawConfig(),
+  };
+}
+
+// ---------- Claw config ----------
+
+export function defaultClawConfig() {
+  return {
+    triggers: { user_message: true, timer: true, file_change: false },
+    poll_interval_sec: 30,
+    max_work_turns: 50,
+  };
+}
+
+// Read an agent's claw config, filling defaults for any missing fields so
+// older persisted agents (no claw_config) still behave sensibly.
+export function clawConfig(agent) {
+  const d = defaultClawConfig();
+  const c = agent?.claw_config ?? {};
+  return {
+    triggers: { ...d.triggers, ...(c.triggers ?? {}) },
+    poll_interval_sec: c.poll_interval_sec ?? d.poll_interval_sec,
+    max_work_turns: c.max_work_turns ?? d.max_work_turns,
   };
 }
 

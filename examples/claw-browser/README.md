@@ -14,8 +14,14 @@ write real files; it persists all state to IndexedDB and syncs it to a
 - **Two modes per agent:**
   - **auto** — interactive, like a chat. You type, it replies, it can
     call tools, you type again.
-  - **claw** — autonomous. You give it a goal; it runs the tool loop on
-    its own until it finishes or hits the turn limit.
+  - **claw** — continuously-on autonomous worker. You give it a goal; it
+    works the tool loop until there's nothing left to do, then **parks**
+    and stays running. It wakes again on its configured triggers, so it
+    keeps reacting to the workspace without being restarted.
+- **Per-claw wake triggers** (claw config): a parked claw can wake on a
+  **new user message**, a **timer heartbeat**, and/or a **workspace file
+  change** — one or more, each agent its own. While a claw runs you can
+  still type to it; messages wake it (or queue until the next tick).
 - **Switch modes at any time.** auto ↔ claw. Switching to claw asks for
   a goal; switching to auto stops a running claw.
 - **Three file tools:** `list_files`, `read_file`, `write_file`. Tools
@@ -75,6 +81,11 @@ A single workspace state object (versioned) holds everything:
       "conversation": { "spec_version": "1.0", "nodes": [ /* luv */ ] },
       "head": "n_...",
       "claw_goal": "...",        // present in claw mode
+      "claw_config": {           // per-claw wake triggers
+        "triggers": { "user_message": true, "timer": true, "file_change": false },
+        "poll_interval_sec": 30,
+        "max_work_turns": 50
+      },
       "created_at": "...",
       "updated_at": "..."
     }

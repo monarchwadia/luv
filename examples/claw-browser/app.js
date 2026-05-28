@@ -10,11 +10,12 @@ import {
   getAgent,
   activeAgents,
   deprecatedAgents,
+  clawConfig,
   nowIso,
   newId,
 } from "./state.js";
 
-import { agentStep, runClaw } from "./agent.js";
+import { agentStep, runClaw, createClawController } from "./agent.js";
 
 // ---------- Global state ----------
 
@@ -63,9 +64,17 @@ const $newCreate = $("new-agent-create");
 
 const $clawDlg = $("claw-goal-dialog");
 const $clawText = $("claw-goal-text");
-const $clawMax = $("claw-max-turns");
 const $clawCancel = $("claw-cancel");
 const $clawStart = $("claw-start");
+
+const $cfgDlg = $("claw-config-dialog");
+const $cfgUser = $("cfg-trig-user");
+const $cfgTimer = $("cfg-trig-timer");
+const $cfgFile = $("cfg-trig-file");
+const $cfgInterval = $("cfg-interval");
+const $cfgMaxWork = $("cfg-max-work");
+const $cfgCancel = $("cfg-cancel");
+const $cfgSave = $("cfg-save");
 
 function setStatus(s) { $status.textContent = s; }
 function updateSaveInfo() {
@@ -136,11 +145,10 @@ function renderAgentCard(agent) {
 
   const status = document.createElement("span");
   const running = runningAgents.has(agent.id);
-  const cls = agent.status === "deprecated"
-    ? "deprecated"
-    : running
-    ? "running"
-    : "idle";
+  let cls;
+  if (agent.status === "deprecated") cls = "deprecated";
+  else if (running) cls = agent.claw_state === "parked" ? "parked" : "running";
+  else cls = "idle";
   status.className = `status-badge ${cls}`;
   status.textContent = cls;
   meta.appendChild(status);
@@ -239,6 +247,13 @@ function renderAgentHeader() {
   const spacer = document.createElement("span");
   spacer.style.flex = "1";
   $agentHeader.appendChild(spacer);
+
+  // Claw wake-trigger config
+  const cfgBtn = document.createElement("button");
+  cfgBtn.textContent = "claw config";
+  cfgBtn.title = "Configure when this claw wakes from a park";
+  cfgBtn.addEventListener("click", () => openClawConfigDialog(a));
+  $agentHeader.appendChild(cfgBtn);
 
   // Deprecate / reactivate
   if (a.status === "active") {
@@ -366,6 +381,20 @@ function renderInputRow() {
     return;
   }
 
+  // Running claw: let the user talk to it live, plus a stop button.
+  if (runningAgents.has(a.id) && a.mode === "claw") {
+    const input = makeMessageInput(a, "message the claw...", false);
+    $inputRow.appendChild(input.textarea);
+    $inputRow.appendChild(input.sendBtn);
+    const stop = document.createElement("button");
+    stop.className = "action-btn danger";
+    stop.textContent = "stop";
+    stop.addEventListener("click", () => stopAgent(a));
+    $inputRow.appendChild(stop);
+    return;
+  }
+
+  // Running auto: just a stop button (one cycle in flight).
   if (runningAgents.has(a.id)) {
     const btn = document.createElement("button");
     btn.className = "action-btn danger";
@@ -376,47 +405,59 @@ function renderInputRow() {
     return;
   }
 
+  // Idle claw: offer to (re)start with a goal.
   if (a.mode === "claw") {
     const btn = document.createElement("button");
     btn.className = "action-btn";
     btn.style.width = "100%";
-    btn.textContent = "claw idle — switch to auto or set a new goal";
+    btn.textContent = "claw idle — set a goal to start";
     btn.addEventListener("click", () => openClawDialog());
     $inputRow.appendChild(btn);
     return;
   }
 
   // Auto mode: textarea + send.
-  const input = document.createElement("textarea");
-  input.id = "input";
-  input.placeholder = "type a message...";
-  input.rows = 1;
-  $inputRow.appendChild(input);
+  const input = makeMessageInput(a, "type a message...", true);
+  $inputRow.appendChild(input.textarea);
+  $inputRow.appendChild(input.sendBtn);
+  setTimeout(() => input.textarea.focus(), 0);
+}
 
-  const send = document.createElement("button");
-  send.id = "send";
-  send.className = "action-btn";
-  send.textContent = "send";
-  $inputRow.appendChild(send);
+// Build a textarea + send button that calls sendUserMessage on submit.
+// `gateOnCanSend` disables the controls when canSend() is false (auto
+// mode); a running claw stays enabled so the user can interject.
+function makeMessageInput(agent, placeholder, gateOnCanSend) {
+  const textarea = document.createElement("textarea");
+  textarea.id = "input";
+  textarea.placeholder = placeholder;
+  textarea.rows = 1;
 
-  const ready = canSend();
-  send.disabled = !ready;
-  input.disabled = !ready;
+  const sendBtn = document.createElement("button");
+  sendBtn.id = "send";
+  sendBtn.className = "action-btn";
+  sendBtn.textContent = "send";
+
+  if (gateOnCanSend) {
+    const ready = canSend();
+    sendBtn.disabled = !ready;
+    textarea.disabled = !ready;
+  }
 
   const submit = () => {
-    const text = input.value.trim();
-    if (!text || !canSend()) return;
-    input.value = "";
+    const text = textarea.value.trim();
+    if (!text) return;
+    if (gateOnCanSend && !canSend()) return;
+    textarea.value = "";
     sendUserMessage(text);
   };
-  send.addEventListener("click", submit);
-  input.addEventListener("keydown", (e) => {
+  sendBtn.addEventListener("click", submit);
+  textarea.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
     }
   });
-  setTimeout(() => input.focus(), 0);
+  return { textarea, sendBtn };
 }
 
 function canSend() {
@@ -493,6 +534,21 @@ async function sendUserMessage(text) {
   updateNodeInDom(userNode);
   touch();
 
+  // If this agent is a running claw, deliver the message to it rather than
+  // starting a separate cycle. It wakes immediately if its user_message
+  // trigger is on; otherwise the message waits for the next timer/file wake.
+  if (a.mode === "claw" && runningAgents.has(a.id)) {
+    const ctl = runningAgents.get(a.id);
+    const cfg = clawConfig(a);
+    if (cfg.triggers.user_message) {
+      ctl.wake?.("user_message");
+      setStatus(`${a.name}: message delivered — waking claw.`);
+    } else {
+      setStatus(`${a.name}: message queued (claw wakes on timer/file changes).`);
+    }
+    return;
+  }
+
   // Run agent step loop until no more tool calls or aborted.
   const ctl = new AbortController();
   runningAgents.set(a.id, ctl);
@@ -523,14 +579,12 @@ async function sendUserMessage(text) {
 
 function openClawDialog() {
   $clawText.value = "";
-  $clawMax.value = 20;
   $clawDlg.showModal();
 }
 
 $clawCancel.addEventListener("click", () => $clawDlg.close());
 $clawStart.addEventListener("click", async () => {
   const goal = $clawText.value.trim();
-  const maxTurns = parseInt($clawMax.value, 10) || 20;
   if (!goal) return;
   $clawDlg.close();
   const a = activeAgent();
@@ -539,30 +593,74 @@ $clawStart.addEventListener("click", async () => {
   a.updated_at = nowIso();
   touch();
   render();
-  await startClaw(a, goal, maxTurns);
+  await startClaw(a, goal);
 });
 
-async function startClaw(agent, goal, maxTurns) {
-  const ctl = new AbortController();
+async function startClaw(agent, goal) {
+  const ctl = createClawController(agent);
   runningAgents.set(agent.id, ctl);
   render();
   try {
     await runClaw({
       agent,
       goal,
-      maxTurns,
+      controller: ctl,
       apiKey: apiKeys[agent.provider],
       onNodeAppended: (n) => { updateNodeInDom(n); touch(); },
       onNodeUpdated: (n) => { updateNodeInDom(n); touch(); },
       rootDirGetter: () => rootDir,
       setStatus,
-      signal: ctl.signal,
+      onParked: () => { touch(); renderSidebar(); renderInputRow(); },
+      onResumed: () => { renderSidebar(); renderInputRow(); },
     });
   } finally {
     runningAgents.delete(agent.id);
+    agent.claw_state = "stopped";
     render();
   }
 }
+
+// ---------- Claw config dialog ----------
+
+function openClawConfigDialog(agent) {
+  const cfg = clawConfig(agent);
+  $cfgUser.checked = cfg.triggers.user_message;
+  $cfgTimer.checked = cfg.triggers.timer;
+  $cfgFile.checked = cfg.triggers.file_change;
+  $cfgInterval.value = cfg.poll_interval_sec;
+  $cfgMaxWork.value = cfg.max_work_turns;
+  $cfgDlg.dataset.agentId = agent.id;
+  $cfgDlg.showModal();
+}
+
+$cfgCancel.addEventListener("click", () => $cfgDlg.close());
+$cfgSave.addEventListener("click", () => {
+  const agent = getAgent(state, $cfgDlg.dataset.agentId);
+  if (!agent) { $cfgDlg.close(); return; }
+
+  const triggers = {
+    user_message: $cfgUser.checked,
+    timer: $cfgTimer.checked,
+    file_change: $cfgFile.checked,
+  };
+  // A claw with no triggers would park forever — keep the timer on.
+  if (!triggers.user_message && !triggers.timer && !triggers.file_change) {
+    triggers.timer = true;
+  }
+  const interval = Math.max(2, parseInt($cfgInterval.value, 10) || 30);
+  const maxWork = Math.max(1, parseInt($cfgMaxWork.value, 10) || 50);
+
+  agent.claw_config = {
+    triggers,
+    poll_interval_sec: interval,
+    max_work_turns: maxWork,
+  };
+  agent.updated_at = nowIso();
+  touch();
+  $cfgDlg.close();
+  setStatus(`${agent.name}: claw config saved (applies at next park).`);
+  render();
+});
 
 // ---------- New agent dialog ----------
 
