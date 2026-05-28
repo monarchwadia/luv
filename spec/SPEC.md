@@ -273,9 +273,14 @@ ErrorCategory :=
   identifies the failure class; `message` is a human-readable summary;
   `details` is canonical JSON (Section 3) carried as `Text` for any
   structured payload (HTTP status, retry-after, provider error body,
-  etc.). Implementations may surface errors as blocks or throw them as
-  out-of-band exceptions; the choice is per-category configuration
-  (transport spec) and outside the canonical spec.
+  etc.). *Rationale: luv treats errors as conversation state because
+  conversations are the unit of persistence, replay, and forking. An
+  error that happened during a previous turn is part of that turn's
+  history; rendering, storing, and reasoning about it benefits from it
+  being data alongside text and tool calls.* Implementations may
+  surface errors as blocks or as thrown exceptions; the choice is
+  per-category configuration (transport spec) and outside the canonical
+  spec.
 
 **`ErrorCategory` values.**
 
@@ -396,14 +401,20 @@ properties follow directly from the invariants:
   every node referencing it (invariant 2) and every `tool_result`
   referencing a `tool_call` in its content (invariant 6). Treat ids as
   immutable.
-- **In-place message edits are allowed.** A node's `message` may be
-  modified while preserving its `id` and `parent_id`, provided the
-  result is still well-formed. (In particular, an edit that removes a
-  `tool_call` block referenced by some descendant's `tool_result`
+- **Fork-on-edit is the recommended pattern.** To "edit" a previous
+  turn, the canonical pattern is to create a new node that shares the
+  same `parent_id` as the original. Both versions persist; the consumer
+  navigates to whichever it considers active. This preserves edit
+  history, composes cleanly with replay and audit, and matches the way
+  conversation UIs naturally render forks.
+- **In-place message edits are allowed but lossy.** A node's `message`
+  may be modified while preserving its `id` and `parent_id`, provided
+  the result is still well-formed. (In particular, an edit that removes
+  a `tool_call` block referenced by some descendant's `tool_result`
   violates invariant 7 and is therefore malformed — the descendants
-  must also be removed, or the edit should be performed as a fork.)
-  The prior content is not retained by the canonical type; apps wanting
-  edit history should fork instead of editing in place.
+  must also be removed, or the edit should be performed as a fork.) The
+  prior content is not retained by the canonical type; this mode is
+  appropriate only when edit history is not needed.
 - **Logical pruning is free.** A consumer may treat any subtree as
   inactive (navigate elsewhere) without removing it from the canonical
   conversation. The data continues to live in the `nodes` array;
@@ -854,6 +865,33 @@ in every general-purpose programming language:
 A case passes iff the byte sequences are equal. Internal representation,
 parallelism, async, network access, error reporting, and CLI ergonomics
 are all implementation-defined.
+
+### 5.4 What the bench verifies (and what it does not)
+
+The bench verifies that an implementation produces canonical JSON output
+**byte-equal** to recorded `expected.json` for each `input.json`. This
+guarantees behavioral stability over time and agreement between any two
+implementations on every recorded case.
+
+The bench does *not* independently verify correctness against the spec
+prose. `expected.json` files are typically regenerated from a reference
+implementation (via a recorder script that runs the arrow on a fresh
+`input.json` and writes the result), then reviewed by humans via
+version-control diff before being committed. Two implementations that
+both pass the bench agree with each other; if a fixture is wrong,
+neither implementation catches that — only the human review does.
+
+Correctness verification happens through:
+
+1. **Human review of `expected.json` diffs** when fixtures are refreshed
+   against the live API.
+2. **Direct reading of the spec** against the implementation by
+   contributors.
+3. **Live integration** (smoke tests against real provider endpoints)
+   for transport-layer behavior.
+
+The bench is a regression guard and a cross-implementation conformance
+contract. It is not a correctness oracle.
 
 ---
 
