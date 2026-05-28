@@ -1,1 +1,1 @@
-{"message":{"role":"assistant","content":[{"kind":"tool_call","id":"call_kDcWN0Lr58Pa8rT2vrdqRD13","name":"get_weather","args":"{\"city\":\"Tokyo\"}"}]},"finish_reason":"end_turn"}
+{"message":{"role":"assistant","content":[{"kind":"tool_call","id":"call_QNPQsdQukh2xQukYAJUd8xLV","name":"get_weather","args":"{\"city\":\"Tokyo\"}"}]},"finish_reason":"end_turn"}

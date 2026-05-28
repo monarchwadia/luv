@@ -10,7 +10,10 @@
     "./morphisms/openai_chat": "./src/morphisms/openai_chat.ts"
   },
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "record": "bun run scripts/record.ts",
+    "verify": "bun run scripts/record.ts --verify",
+    "smoke": "bun run scripts/smoke.ts"
   },
   "engines": {
     "bun": ">=1.0.0"
