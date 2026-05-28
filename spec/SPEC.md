@@ -51,10 +51,10 @@ it.
   canonical model are not representable in luv values; they are named in
   each morphism's `homomorphism_exceptions` and effectively unavailable
   to portable code.
-- **Narrow v1.** The current canonical types cover text-only
-  conversations. Tool use, multimodal inputs (images, audio), embeddings,
-  fine-tuning, and provider-managed conversation state are out of scope
-  until future spec versions.
+- **Narrow v1.** The current canonical types cover text and tool use.
+  Multimodal inputs (images, audio), embeddings, fine-tuning, and
+  provider-managed conversation state are out of scope until future
+  spec versions.
 - **Strict wire determinism.** An implementation must implement or import a
   canonical JSON serializer that obeys Section 3 exactly. Most
   off-the-shelf JSON libraries vary on key order, escape choices, and
@@ -192,10 +192,10 @@ encodings are byte-equal.
 The type notation used in this section is illustrative; the normative
 definition of each type is its canonical JSON form. Primitive names denote
 concepts, not host-language types: `Text` is a sequence of Unicode scalar
-values; an ordered sequence (e.g. `[Message, ...]`) is a finite,
-zero-indexed list; a brace literal denotes a record with named fields. A
-implementation may represent canonical values in any internal shape its host
-language admits (see P8).
+values; an ordered sequence (e.g. `[Block, ...]`) is a finite,
+zero-indexed list; a brace literal denotes a record with named fields. An
+implementation may represent canonical values in any internal shape its
+host language admits (see P8).
 
 The canonical types are shared across all morphisms. Because every
 morphism produces and consumes the same canonical types, a reply from one
@@ -360,17 +360,17 @@ An empty conversation is `{"spec_version":"1.0","nodes":[]}`.
 **Well-formedness invariants.** A canonical Conversation is well-formed
 iff all of the following hold:
 
-0. **Known `spec_version`.** `spec_version` is a value the validator
+1. **Known `spec_version`.** `spec_version` is a value the validator
    recognizes (currently `"1.0"`).
-1. **Unique ids.** No two nodes share an `id`.
-2. **Valid parent references.** For every node with non-null
+2. **Unique ids.** No two nodes share an `id`.
+3. **Valid parent references.** For every node with non-null
    `parent_id`, a node with that `id` exists in `nodes`.
-3. **Single root.** Exactly one node has `parent_id: null` (zero for
+4. **Single root.** Exactly one node has `parent_id: null` (zero for
    an empty `nodes`).
-4. **Topological array order.** A node's parent (if any) appears
+5. **Topological array order.** A node's parent (if any) appears
    earlier in the `nodes` array than the node itself.
-5. **Acyclic.** No node is its own ancestor. (Implied by 3+4.)
-6. **`tool_result.call_id` resolves in ancestry.** If a node contains a
+6. **Acyclic.** No node is its own ancestor. (Implied by 4+5.)
+7. **`tool_result.call_id` resolves in ancestry.** If a node contains a
    `tool_result` block with `call_id: X`, then a node carrying a
    `tool_call` block with `id: X` must exist on the path from that node
    through `parent_id` to the root.
@@ -400,7 +400,7 @@ properties follow directly from the invariants:
   modified while preserving its `id` and `parent_id`, provided the
   result is still well-formed. (In particular, an edit that removes a
   `tool_call` block referenced by some descendant's `tool_result`
-  violates invariant 6 and is therefore malformed — the descendants
+  violates invariant 7 and is therefore malformed — the descendants
   must also be removed, or the edit should be performed as a fork.)
   The prior content is not retained by the canonical type; apps wanting
   edit history should fork instead of editing in place.
@@ -410,8 +410,8 @@ properties follow directly from the invariants:
   invariants are undisturbed.
 - **Physical pruning forces cascade.** If an interior node is
   physically removed from the array, all of its descendants must be
-  removed with it to keep invariant (2) satisfied. There is no
-  canonical in-place re-parenting operation.
+  removed with it to keep invariant 3 satisfied. There is no canonical
+  in-place re-parenting operation.
 
 ### 2.4 FinishReason
 
@@ -453,9 +453,12 @@ Canonical JSON form:
 ```
 
 Key order is fixed: `message` precedes `finish_reason`. The nested
-message's `role` must be `"assistant"`, and its content blocks are
-restricted to `text` and `tool_call` (per the Block role conventions in
-Section 2.2).
+message's `role` must be `"assistant"`. Its content blocks are
+restricted to `text`, `tool_call`, and `error` (per the Block role
+conventions in Section 2.2; `tool_result` blocks never appear in a
+Reply because the assistant does not produce tool results, and an
+`error` block indicates a Reply that terminated abnormally — see
+Section 2.4 for the corresponding `error` finish_reason).
 
 ### 2.6 Stream and StreamEvent
 
@@ -482,12 +485,18 @@ StreamEvent<Reply> :=
   | { kind: "message_end", finish_reason: FinishReason }
 ```
 
-In `block_start`, `block` is a `Block` in its initial form: `text` is
-`""` for `text` blocks; `args` is `""` for `tool_call` blocks (with
-`id` and `name` set to their final values). `tool_result` blocks do not
-appear in `Stream<Reply>` (per the Block role conventions in
-Section 2.2, tool_result blocks belong in user messages, not assistant
-replies).
+In `block_start`, `block` is a `Block` in its initial form:
+
+- `text` blocks: `text` is `""`; the final text accumulates via
+  `text_delta` events.
+- `tool_call` blocks: `args` is `""` (with `id` and `name` set to their
+  final values); the final args accumulate via `args_delta` events.
+- `error` blocks: complete at `block_start` (`category`, `message`,
+  `details` all final); no delta events follow before `block_end`.
+
+`tool_result` blocks do not appear in `Stream<Reply>` (per the Block
+role conventions in Section 2.2, `tool_result` blocks belong in user
+messages, not assistant replies).
 
 A well-formed `Stream<Reply>` matches the grammar:
 
@@ -498,7 +507,8 @@ Stream<Reply> := message_start
 ```
 
 Inside a `text` block, only `text_delta` events are valid. Inside a
-`tool_call` block, only `args_delta` events are valid.
+`tool_call` block, only `args_delta` events are valid. Inside an
+`error` block, no delta events are valid.
 
 `consume_luv_stream_reply` produces a `Reply` whose `message` has
 `role: "assistant"`. The content array is built from the events in
@@ -520,11 +530,13 @@ stream that consumes back to it. The arrow is named
 
 - one `message_start`;
 - for each block `b` in `r.message.content`:
-  - one `block_start` whose `block` is `b` in its initial form
-    (`text: ""` if `b` is text; `args: ""` if `b` is tool_call, with
-    `id` and `name` set to `b`'s values);
+  - one `block_start` whose `block` is `b` in its initial form:
+    `text: ""` if `b` is text; `args: ""` if `b` is tool_call (with
+    `id` and `name` set to `b`'s values); `b` verbatim if `b` is error;
   - if `b` is a `text` block, one `text_delta` whose `text` is `b.text`;
   - if `b` is a `tool_call` block, one `args_delta` whose `args` is `b.args`;
+  - if `b` is an `error` block, no delta event (the block is complete
+    at `block_start`);
   - one `block_end`;
 - one `message_end` whose `finish_reason` is `r.finish_reason`.
 
@@ -620,17 +632,17 @@ once published in a spec version, is never renamed or repurposed.
 | Rule id | Checks |
 |---|---|
 | `shape.role` | Role is `system`, `user`, or `assistant` |
-| `shape.finish_reason` | FinishReason is `end_turn`, `max_tokens`, or `content_filter` |
+| `shape.finish_reason` | FinishReason is `end_turn`, `max_tokens`, `content_filter`, or `error` |
 | `shape.message.fields` | Message has required `{role, content}` with correct types |
 | `shape.message.content_nonempty` | `content` has at least one Block |
-| `shape.block.kind` | Block.kind is `text`, `tool_call`, or `tool_result` |
+| `shape.block.kind` | Block.kind is `text`, `tool_call`, `tool_result`, or `error` |
 | `shape.block.text` | text variant has `{kind, text}` with correct types |
 | `shape.block.tool_call` | tool_call variant has `{kind, id, name, args}` with correct types |
 | `shape.block.tool_result` | tool_result variant has `{kind, call_id, text}` with correct types |
 | `shape.block.error` | error variant has `{kind, category, message, details}` with correct types and `category` is a known `ErrorCategory` value |
 | `shape.reply.fields` | Reply has `{message, finish_reason}` with correct types |
 | `shape.reply.assistant_role` | Reply.message.role is exactly `assistant` |
-| `shape.reply.content_restriction` | Reply.message.content contains only text and tool_call blocks |
+| `shape.reply.content_restriction` | Reply.message.content contains only text, tool_call, or error blocks (no tool_result) |
 | `shape.node.fields` | Node has `{id, parent_id, message}` with correct types |
 | `shape.stream_event.kind` | StreamEvent.kind matches a defined variant |
 | `shape.stream_event.variant_fields` | StreamEvent variant has its required fields |

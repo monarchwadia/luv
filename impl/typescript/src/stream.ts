@@ -24,8 +24,15 @@ export function consume_luv_stream_reply(stream: StreamReply): Reply {
           current = { kind: "text", text: b.text };
         } else if (b.kind === "tool_call") {
           current = { kind: "tool_call", id: b.id, name: b.name, args: b.args };
-        } else {
+        } else if (b.kind === "tool_result") {
           current = { kind: "tool_result", call_id: b.call_id, text: b.text };
+        } else {
+          current = {
+            kind: "error",
+            category: b.category,
+            message: b.message,
+            details: b.details,
+          };
         }
         blocks.push(current);
         break;
@@ -81,6 +88,9 @@ export function produce_luv_stream_reply(reply: Reply): StreamReply {
         },
       });
       events.push({ kind: "args_delta", args: block.args });
+      events.push({ kind: "block_end" });
+    } else if (block.kind === "error") {
+      events.push({ kind: "block_start", block });
       events.push({ kind: "block_end" });
     }
     // tool_result blocks don't appear in Stream<Reply> (assistant-only).

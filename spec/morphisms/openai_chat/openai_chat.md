@@ -265,6 +265,7 @@ this list is exhaustive.
 | Forking conversations | Only the branch from the caller-designated head is encoded; sibling branches in the canonical Conversation are not represented in the OpenAI request. |
 | Node `id` and `parent_id` | Not carried into the OpenAI request; they exist only at the luv side. |
 | `spec_version` | Not carried into the OpenAI request; it is metadata about which luv version the canonical value conforms to. |
+| `error` blocks in conversation history | OpenAI has no canonical representation for in-conversation errors; `error` blocks are dropped when encoding history into `messages`. Apps that want to surface prior errors to the model must convert them to `text` blocks themselves before sending. |
 
 ### `openai_response_to_luv_reply`
 

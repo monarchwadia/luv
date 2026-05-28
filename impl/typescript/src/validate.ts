@@ -425,6 +425,9 @@ function validateBlockInto(
   }
 }
 
+// (shape.reply.content_restriction now allows error blocks alongside
+// text and tool_call; only tool_result blocks are rejected. See above.)
+
 function validateReplyInto(
   input: unknown,
   basePath: string,
@@ -459,7 +462,7 @@ function validateReplyInto(
       });
     }
     validateMessageInto(r.message, `${basePath}/message`, errors);
-    // content_restriction: only text and tool_call
+    // content_restriction: only text, tool_call, or error (no tool_result)
     if (Array.isArray(mm.content)) {
       for (let i = 0; i < mm.content.length; i++) {
         const block = mm.content[i] as Record<string, unknown> | null;
