@@ -48,10 +48,13 @@ luv/
 
 These will get you reverted if you violate them.
 
-1. **No third-party dependencies.** The luv project takes zero npm
-   dependencies, runtime or dev. Bun's built-in TypeScript support handles
-   compilation; `bun:test` handles tests. No bundlers, no linters, no
-   anything. If you find yourself wanting to add a dep, stop and ask.
+1. **No third-party runtime dependencies. One dev exception.** The
+   luv project ships with empty `dependencies`, forever. Exactly one
+   dev dependency is permitted: `typescript`, used by `bun run build`
+   to emit `.d.ts` declarations for the npm package. Tests, scripts,
+   and shipped code use only Bun built-ins and Web standard APIs. If
+   you find yourself wanting any other dep — runtime or dev — stop
+   and ask.
 
 2. **`spec/` is the source of truth.** When the spec and the impl
    disagree, the spec wins. Update the impl to match, not vice versa.

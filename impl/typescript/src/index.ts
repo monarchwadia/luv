@@ -11,9 +11,9 @@ export type {
   StreamReply,
   ValidationError,
   ValidationResult,
-} from "./types.ts";
+} from "./types.js";
 
-export { LUV_SPEC_VERSION, ERROR_CATEGORIES, LuvError } from "./types.ts";
+export { LUV_SPEC_VERSION, ERROR_CATEGORIES, LuvError } from "./types.js";
 
 export {
   encodeBlock,
@@ -26,12 +26,12 @@ export {
   encodeValidationError,
   encodeValidationResult,
   stringify,
-} from "./encode.ts";
+} from "./encode.js";
 
 export {
   consume_luv_stream_reply,
   produce_luv_stream_reply,
-} from "./stream.ts";
+} from "./stream.js";
 
 export {
   validate_luv_conversation,
@@ -39,7 +39,7 @@ export {
   validate_luv_block,
   validate_luv_reply,
   validate_luv_stream_reply,
-} from "./validate.ts";
+} from "./validate.js";
 
 export {
   luv_send_to_openai_http_request,
@@ -52,4 +52,4 @@ export {
   type OpenAIClientConfig,
   type ErrorPolicy,
   type ErrorPolicyMap,
-} from "./transport/openai_chat.ts";
+} from "./transport/openai_chat.js";

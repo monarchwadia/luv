@@ -1,24 +1,72 @@
 {
   "name": "luv",
   "version": "0.1.0",
-  "description": "luv reference implementation in TypeScript",
+  "description": "Canonical conversation type and provider morphisms for portable LLM apps. Forks, tool calls, streaming, and errors are first-class. Zero runtime dependencies.",
   "type": "module",
-  "main": "./src/index.ts",
-  "types": "./src/index.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./morphisms/openai_chat": "./src/morphisms/openai_chat.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./openai": {
+      "types": "./dist/transport/openai_chat.d.ts",
+      "import": "./dist/transport/openai_chat.js",
+      "default": "./dist/transport/openai_chat.js"
+    },
+    "./morphisms/openai_chat": {
+      "types": "./dist/morphisms/openai_chat.d.ts",
+      "import": "./dist/morphisms/openai_chat.js",
+      "default": "./dist/morphisms/openai_chat.js"
+    }
   },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "test": "bun test",
     "record": "bun run scripts/record.ts",
     "verify": "bun run scripts/record.ts --verify",
-    "smoke": "bun run scripts/smoke.ts"
+    "smoke": "bun run scripts/smoke.ts",
+    "prepublishOnly": "bun run build"
   },
   "engines": {
+    "node": ">=18",
     "bun": ">=1.0.0"
   },
+  "keywords": [
+    "llm",
+    "ai",
+    "openai",
+    "anthropic",
+    "agents",
+    "agent",
+    "chat",
+    "streaming",
+    "tool-use",
+    "conversation",
+    "fork",
+    "canonical",
+    "spec"
+  ],
+  "author": "Monarch Wadia",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/monarchwadia/luv.git"
+  },
+  "bugs": {
+    "url": "https://github.com/monarchwadia/luv/issues"
+  },
+  "homepage": "https://github.com/monarchwadia/luv#readme",
   "dependencies": {},
-  "devDependencies": {},
-  "private": true
+  "devDependencies": {
+    "typescript": "^5.7.0"
+  },
+  "sideEffects": false
 }

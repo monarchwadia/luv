@@ -4,7 +4,7 @@ import type {
   Reply,
   StreamEventReply,
   StreamReply,
-} from "./types.ts";
+} from "./types.js";
 
 // consume_luv_stream_reply : Stream<Reply> -> Reply
 // Collapses a well-formed Stream<Reply> into the Reply it represents.

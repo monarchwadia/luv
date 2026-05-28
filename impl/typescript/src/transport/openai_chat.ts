@@ -4,15 +4,15 @@ import type {
   Reply,
   StreamEventReply,
   StreamReply,
-} from "../types.ts";
-import { LuvError } from "../types.ts";
-import { stringify } from "../encode.ts";
+} from "../types.js";
+import { LuvError } from "../types.js";
+import { stringify } from "../encode.js";
 import {
   luv_conversation_to_openai_request,
   openai_response_to_luv_reply,
   openai_stream_to_luv_stream,
   type OpenAIRequestOptions,
-} from "../morphisms/openai_chat.ts";
+} from "../morphisms/openai_chat.js";
 
 // ---------- Transport-internal canonical types ----------
 

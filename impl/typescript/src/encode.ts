@@ -8,7 +8,7 @@ import type {
   StreamReply,
   ValidationError,
   ValidationResult,
-} from "./types.ts";
+} from "./types.js";
 
 // Each encoder produces a plain JS object whose property insertion order
 // matches the canonical key order for its type (Section 3 rule 1).

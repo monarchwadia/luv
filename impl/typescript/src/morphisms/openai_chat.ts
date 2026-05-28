@@ -5,7 +5,7 @@ import type {
   Reply,
   StreamReply,
   StreamEventReply,
-} from "../types.ts";
+} from "../types.js";
 
 export interface OpenAIRequestOptions {
   model: string;

@@ -1,8 +1,18 @@
 # luv — TypeScript reference implementation
 
-Hydration of the luv spec (`spec/SPEC.md`) in TypeScript. Runs in Bun;
-the core `src/` is Web-API-only and works in browsers, Node, Bun, and
-Deno. Zero npm dependencies, runtime or dev.
+Hydration of the luv spec (`spec/SPEC.md`) in TypeScript. Runs in Bun
+during development; the published package is a plain ESM library that
+works in browsers, Node (≥18), Bun, and Deno. Zero runtime dependencies.
+
+## Install
+
+```
+npm install luv
+# or
+bun add luv
+# or
+pnpm add luv
+```
 
 ## Quickstart
 
@@ -95,6 +105,7 @@ impl/typescript/
 | Command | What it does |
 |---|---|
 | `bun test` | Run the bench against on-disk fixtures (no network). |
+| `bun run build` | Compile `src/` to `dist/` with type declarations (uses `tsc`). |
 | `bun run verify` | Verify request-shape cases (luv→provider) against the live API; no file writes. |
 | `bun run record` | Refresh recorded fixtures (input.json + regenerated expected.json) by hitting the live API. Reviewable via `git diff`. |
 | `bun run smoke` | Live end-to-end smoke test of `client.send` + `client.stream`. |
@@ -162,7 +173,10 @@ known-compatible providers.
   API and regenerates `expected.json` from the current arrow. Diffs
   surface in `git diff` for human review before commit. Standard
   snapshot-test workflow.
-- **No npm deps.** All code is hand-written. Bun's built-in TypeScript
-  support handles compilation. Tests use `bun:test`. The transport
-  layer uses `fetch`, `ReadableStream`, and `TextDecoder` — all Web
-  Standard APIs available in every modern runtime.
+- **Zero runtime dependencies.** All shipped code is hand-written. The
+  transport layer uses `fetch`, `ReadableStream`, and `TextDecoder` —
+  all Web Standard APIs available in every modern runtime. The only
+  dev dependency is `typescript` (for type-declaration emission during
+  publish; see `DECISIONS.md`).
+- **Bun for development.** `bun test`, `bun build`, `bun:test`, and
+  hand-rolled scripts. No bundlers, linters, or other tooling.

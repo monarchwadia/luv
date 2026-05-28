@@ -10,12 +10,12 @@ import {
   encodeStreamReply,
   encodeValidationResult,
   stringify,
-} from "../src/index.ts";
+} from "../src/index.js";
 import {
   luv_conversation_to_openai_request,
   openai_response_to_luv_reply,
   openai_stream_to_luv_stream,
-} from "../src/morphisms/openai_chat.ts";
+} from "../src/morphisms/openai_chat.js";
 import {
   luv_send_to_openai_http_request,
   openai_http_response_to_luv_reply,
@@ -23,7 +23,7 @@ import {
   type HTTPRequest,
   type HTTPResponse,
   type OpenAIClientConfig,
-} from "../src/transport/openai_chat.ts";
+} from "../src/transport/openai_chat.js";
 
 function encodeHTTPRequest(req: HTTPRequest): unknown {
   return {

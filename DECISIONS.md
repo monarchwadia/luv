@@ -300,17 +300,35 @@ point rather than treating it as a framework.
 
 ---
 
-## No third-party dependencies
+## Dependencies: zero runtime; one dev exception
 
 **Considered:** Allowing dev dependencies (TypeScript compiler,
 testing framework, linter, bundler).
 
-**Rejected.** The luv project itself takes zero npm dependencies,
-runtime or dev. Bun's built-in TypeScript support handles
-compilation; `bun:test` handles tests; no bundler is needed.
+**Chosen:** Zero runtime dependencies, ever. Exactly one dev
+dependency permitted: `typescript`, used solely to emit `.d.ts`
+declaration files during `bun run build` (consumed by `npm publish`).
+Tests, scripts, and runtime code use only Bun built-ins and Web
+standard APIs.
 
-**Why:** Auditable supply chain. Faster to clone and run. No
-transitive-dependency surface. Forces the project to stay simple
-enough that hand-written code suffices. (This is a project-level
-rule, not a spec rule; reference implementations in other languages
-may relax it where their ecosystem norms differ.)
+**Why the exception:**
+
+- Bun's bundler can produce JavaScript but does not emit `.d.ts`
+  declarations. Without them, the published npm package would either
+  ship raw `.ts` (limiting it to TS-aware tooling) or no types at
+  all (poor consumer DX). Shipping `.js` + `.d.ts` is the standard
+  expectation for an npm library in 2026.
+- `typescript` is the single canonical tool for this job; no
+  reasonable alternative exists in the JS ecosystem.
+- The dependency runs only at publish time. Consumers installing
+  `luv` never pull TypeScript transitively — `dependencies` in the
+  shipped `package.json` is empty.
+
+Auditable supply chain is preserved: one well-known dev dep, used at
+publish time only, never bundled into shipped code. The shipped
+runtime in `dist/` is hand-written modulo `tsc`'s transpile output,
+which is deterministic and inspectable.
+
+(This is a project-level rule, not a spec rule; reference
+implementations in other languages may relax it where their ecosystem
+norms differ.)

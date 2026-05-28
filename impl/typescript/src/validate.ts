@@ -1,4 +1,4 @@
-import type { ValidationError, ValidationResult } from "./types.ts";
+import type { ValidationError, ValidationResult } from "./types.js";
 
 // Validators take *alleged* canonical values and return a ValidationResult.
 // Errors are emitted in depth-first, left-to-right traversal order.

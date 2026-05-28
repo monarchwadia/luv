@@ -8,8 +8,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Conversation, Reply } from "../src/index.ts";
-import { openaiClient, LuvError } from "../src/index.ts";
+import type { Conversation, Reply } from "../src/index.js";
+import { openaiClient, LuvError } from "../src/index.js";
 
 const ENV_PATH = join(import.meta.dir, "..", "..", "..", ".env");
 
