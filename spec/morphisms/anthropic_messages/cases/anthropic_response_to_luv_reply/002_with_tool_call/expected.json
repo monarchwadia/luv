@@ -1,1 +1,1 @@
-{"message":{"role":"assistant","content":[{"kind":"tool_call","id":"toolu_synth","name":"get_weather","args":"{\"city\":\"Tokyo\"}"}]},"finish_reason":"end_turn"}
+{"message":{"role":"assistant","content":[{"kind":"tool_call","id":"toolu_0184rJWMAJTwfYZHq5UMHvi2","name":"get_weather","args":"{\"city\":\"Tokyo\"}"}]},"finish_reason":"end_turn"}

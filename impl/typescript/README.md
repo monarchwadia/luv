@@ -17,28 +17,31 @@ pnpm add luv
 ## Quickstart
 
 ```ts
-import { openaiClient } from "luv";
+import { openaiClient, anthropicClient } from "luv";
 
-const client = openaiClient({ api_key: process.env.OPENAI_API_KEY! });
+const openai = openaiClient({ api_key: process.env.OPENAI_API_KEY! });
+const anthropic = anthropicClient({ api_key: process.env.ANTHROPIC_API_KEY! });
 
-const reply = await client.send(
-  {
-    spec_version: "1.0",
-    nodes: [
-      {
-        id: "n1",
-        parent_id: null,
-        message: {
-          role: "user",
-          content: [{ kind: "text", text: "Hello!" }],
-        },
+const conv = {
+  spec_version: "1.0",
+  nodes: [
+    {
+      id: "n1",
+      parent_id: null,
+      message: {
+        role: "user",
+        content: [{ kind: "text", text: "Hello!" }],
       },
-    ],
-  },
-  { model: "gpt-4o-mini" },
-);
+    },
+  ],
+};
 
-console.log(reply.message.content[0]);  // { kind: "text", text: "Hello! ..." }
+// Same conversation, either provider, identical Reply shape.
+const r1 = await openai.send(conv, { model: "gpt-4o-mini" });
+const r2 = await anthropic.send(conv, {
+  model: "claude-haiku-4-5",
+  max_tokens: 1024,
+});
 ```
 
 Streaming:
@@ -110,8 +113,9 @@ impl/typescript/
 | `bun run record` | Refresh recorded fixtures (input.json + regenerated expected.json) by hitting the live API. Reviewable via `git diff`. |
 | `bun run smoke` | Live end-to-end smoke test of `client.send` + `client.stream`. |
 
-All scripts that hit the live API expect `OPENAI_API_KEY` in either
-the environment or `<repo-root>/.env`.
+All scripts that hit the live API expect `OPENAI_API_KEY` and/or
+`ANTHROPIC_API_KEY` in either the environment or `<repo-root>/.env`.
+Providers without a configured key are skipped.
 
 ## Universal use
 
@@ -137,6 +141,16 @@ OpenAI transport arrows — `spec/morphisms/openai_chat/cases/`:
 - `luv_send_to_openai_http_request`
 - `openai_http_response_to_luv_reply`
 - `openai_http_stream_to_luv_stream`
+
+Anthropic morphism arrows — `spec/morphisms/anthropic_messages/cases/`:
+- `luv_conversation_to_anthropic_request`
+- `anthropic_response_to_luv_reply`
+- `anthropic_stream_to_luv_stream`
+
+Anthropic transport arrows — `spec/morphisms/anthropic_messages/cases/`:
+- `luv_send_to_anthropic_http_request`
+- `anthropic_http_response_to_luv_reply`
+- `anthropic_http_stream_to_luv_stream`
 
 Also exported but not (yet) exercised by bench cases:
 `validate_luv_message`, `validate_luv_block`, `validate_luv_reply`,

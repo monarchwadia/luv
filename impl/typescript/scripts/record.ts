@@ -5,7 +5,8 @@
 //   bun run scripts/record.ts            (refresh everything)
 //   bun run scripts/record.ts --verify   (no writes; just verify request shapes)
 //
-// Requires OPENAI_API_KEY in repo-root .env or environment.
+// Requires OPENAI_API_KEY and/or ANTHROPIC_API_KEY in repo-root .env or
+// environment. Cases for providers without a key configured are skipped.
 
 import {
   existsSync,
@@ -16,6 +17,13 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
+import type { Reply, StreamReply } from "../src/index.js";
+import {
+  encodeReply,
+  encodeStreamReply,
+  stringify,
+} from "../src/index.js";
+
 import {
   openai_response_to_luv_reply,
   openai_stream_to_luv_stream,
@@ -25,33 +33,115 @@ import {
   openai_http_stream_to_luv_stream,
   type HTTPResponse,
 } from "../src/transport/openai_chat.js";
+
 import {
-  encodeReply,
-  encodeStreamReply,
-  stringify,
-} from "../src/index.js";
+  anthropic_response_to_luv_reply,
+  anthropic_stream_to_luv_stream,
+} from "../src/morphisms/anthropic_messages.js";
+import {
+  anthropic_http_response_to_luv_reply,
+  anthropic_http_stream_to_luv_stream,
+} from "../src/transport/anthropic_messages.js";
 
 const SPEC_ROOT = join(import.meta.dir, "..", "..", "..", "spec");
 const ENV_PATH = join(import.meta.dir, "..", "..", "..", ".env");
 
-const API_KEY = loadApiKey();
 const VERIFY_ONLY = process.argv.includes("--verify");
+const ENV = loadEnv();
 
-function loadApiKey(): string {
-  if (process.env.OPENAI_API_KEY) return process.env.OPENAI_API_KEY;
+function loadEnv(): Record<string, string> {
+  const env: Record<string, string> = { ...process.env };
   if (existsSync(ENV_PATH)) {
     for (const line of readFileSync(ENV_PATH, "utf8").split("\n")) {
-      const m = line.match(/^OPENAI_API_KEY=(.*)$/);
-      if (m) return m[1].trim().replace(/^"|"$/g, "");
+      const m = line.match(/^([A-Z_]+)=(.*)$/);
+      if (m && !env[m[1]]) env[m[1]] = m[2].trim().replace(/^"|"$/g, "");
     }
   }
-  console.error(
-    "OPENAI_API_KEY not found in environment or " + ENV_PATH,
-  );
-  process.exit(1);
+  return env;
 }
 
-const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
+// ---------- Provider hooks ----------
+
+interface ProviderHooks {
+  apiKeyEnv: string;
+  url: string;
+  buildHeaders: (apiKey: string) => Record<string, string>;
+  contentTypeStream: string;
+  parseSSE: (body: string) => unknown[];
+  responseToReply: (resp: unknown) => Reply;
+  streamToStream: (events: unknown[]) => StreamReply;
+  httpResponseToReply: (resp: HTTPResponse) => Reply;
+  httpStreamToStream: (resp: HTTPResponse) => StreamReply;
+}
+
+function parseSSE_openai(body: string): unknown[] {
+  const chunks: unknown[] = [];
+  for (const event of body.split("\n\n")) {
+    for (const line of event.split("\n")) {
+      if (!line.startsWith("data: ")) continue;
+      const payload = line.slice(6);
+      if (payload === "[DONE]") return chunks;
+      try {
+        chunks.push(JSON.parse(payload));
+      } catch {
+        /* skip */
+      }
+    }
+  }
+  return chunks;
+}
+
+function parseSSE_anthropic(body: string): unknown[] {
+  // Anthropic SSE has both event: and data: lines; we take only data:.
+  // No [DONE] terminator; stream ends with a message_stop event.
+  const events: unknown[] = [];
+  for (const block of body.split("\n\n")) {
+    for (const line of block.split("\n")) {
+      if (!line.startsWith("data: ")) continue;
+      const payload = line.slice(6);
+      try {
+        events.push(JSON.parse(payload));
+      } catch {
+        /* skip */
+      }
+    }
+  }
+  return events;
+}
+
+const PROVIDERS: Record<string, ProviderHooks> = {
+  openai_chat: {
+    apiKeyEnv: "OPENAI_API_KEY",
+    url: "https://api.openai.com/v1/chat/completions",
+    buildHeaders: (apiKey) => ({
+      authorization: `Bearer ${apiKey}`,
+      "content-type": "application/json",
+    }),
+    contentTypeStream: "text/event-stream",
+    parseSSE: parseSSE_openai,
+    responseToReply: openai_response_to_luv_reply,
+    streamToStream: openai_stream_to_luv_stream,
+    httpResponseToReply: openai_http_response_to_luv_reply,
+    httpStreamToStream: openai_http_stream_to_luv_stream,
+  },
+  anthropic_messages: {
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+    url: "https://api.anthropic.com/v1/messages",
+    buildHeaders: (apiKey) => ({
+      "anthropic-version": "2023-06-01",
+      "content-type": "application/json",
+      "x-api-key": apiKey,
+    }),
+    contentTypeStream: "text/event-stream",
+    parseSSE: parseSSE_anthropic,
+    responseToReply: anthropic_response_to_luv_reply,
+    streamToStream: anthropic_stream_to_luv_stream,
+    httpResponseToReply: anthropic_http_response_to_luv_reply,
+    httpStreamToStream: anthropic_http_stream_to_luv_stream,
+  },
+};
+
+// ---------- Case discovery ----------
 
 interface CaseRef {
   morphism: string;
@@ -88,24 +178,51 @@ function safeIsDir(p: string): boolean {
   }
 }
 
+// ---------- Counters ----------
+
 let pass = 0;
 let fail = 0;
 let written = 0;
+let skipped = 0;
+
+// ---------- Per-case processing ----------
 
 async function processCase(c: CaseRef): Promise<void> {
-  // Request-shape cases: send expected.json's body to OpenAI; verify 200.
-  if (c.arrow === "luv_conversation_to_openai_request") {
-    return verifyRequestShape(c, "morphism");
-  }
-  if (c.arrow === "luv_send_to_openai_http_request") {
-    return verifyRequestShape(c, "transport");
+  const provider = PROVIDERS[c.morphism];
+  if (!provider) {
+    console.log(
+      `  skip (no provider hooks for ${c.morphism}): ${c.morphism}/${c.arrow}/${c.slug}`,
+    );
+    skipped++;
+    return;
   }
 
-  // Refresh fixture cases: send record.json's request, capture response.
-  const recordPath = join(c.dir, "record.json");
-  if (!existsSync(recordPath)) {
-    return; // Not refreshable (synthetic, or no record metadata).
+  const apiKey = ENV[provider.apiKeyEnv];
+  if (!apiKey) {
+    console.log(
+      `  skip (${provider.apiKeyEnv} not set): ${c.morphism}/${c.arrow}/${c.slug}`,
+    );
+    skipped++;
+    return;
   }
+
+  // Request-shape cases.
+  if (
+    c.arrow === "luv_conversation_to_openai_request" ||
+    c.arrow === "luv_conversation_to_anthropic_request"
+  ) {
+    return verifyMorphismRequestShape(c, provider, apiKey);
+  }
+  if (
+    c.arrow === "luv_send_to_openai_http_request" ||
+    c.arrow === "luv_send_to_anthropic_http_request"
+  ) {
+    return verifyTransportRequestShape(c, provider, apiKey);
+  }
+
+  // Refresh-fixture cases.
+  const recordPath = join(c.dir, "record.json");
+  if (!existsSync(recordPath)) return; // synthetic; not refreshable.
 
   const recordMeta = JSON.parse(readFileSync(recordPath, "utf8")) as {
     request: Record<string, unknown>;
@@ -113,37 +230,37 @@ async function processCase(c: CaseRef): Promise<void> {
 
   switch (c.arrow) {
     case "openai_response_to_luv_reply":
-      return refreshNonStreamingMorphism(c, recordMeta.request);
+    case "anthropic_response_to_luv_reply":
+      return refreshMorphismResponse(c, provider, apiKey, recordMeta.request);
     case "openai_stream_to_luv_stream":
-      return refreshStreamingMorphism(c, recordMeta.request);
+    case "anthropic_stream_to_luv_stream":
+      return refreshMorphismStream(c, provider, apiKey, recordMeta.request);
     case "openai_http_response_to_luv_reply":
-      return refreshNonStreamingTransport(c, recordMeta.request);
+    case "anthropic_http_response_to_luv_reply":
+      return refreshTransportResponse(c, provider, apiKey, recordMeta.request);
     case "openai_http_stream_to_luv_stream":
-      return refreshStreamingTransport(c, recordMeta.request);
+    case "anthropic_http_stream_to_luv_stream":
+      return refreshTransportStream(c, provider, apiKey, recordMeta.request);
     default:
       console.log(`  skip (unknown arrow): ${c.morphism}/${c.arrow}/${c.slug}`);
+      skipped++;
   }
 }
 
-async function verifyRequestShape(
+async function verifyMorphismRequestShape(
   c: CaseRef,
-  kind: "morphism" | "transport",
+  provider: ProviderHooks,
+  apiKey: string,
 ): Promise<void> {
   const expected = JSON.parse(
     readFileSync(join(c.dir, "expected.json"), "utf8"),
   );
-  const body =
-    kind === "morphism" ? JSON.stringify(expected) : expected.body;
-
-  const res = await fetch(OPENAI_URL, {
+  const body = JSON.stringify(expected);
+  const res = await fetch(provider.url, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${API_KEY}`,
-      "content-type": "application/json",
-    },
+    headers: provider.buildHeaders(apiKey),
     body,
   });
-
   if (res.status === 200) {
     pass++;
     console.log(`  ✓ ${c.morphism}/${c.arrow}/${c.slug}`);
@@ -156,17 +273,41 @@ async function verifyRequestShape(
   }
 }
 
-async function refreshNonStreamingMorphism(
+async function verifyTransportRequestShape(
   c: CaseRef,
+  provider: ProviderHooks,
+  apiKey: string,
+): Promise<void> {
+  const expected = JSON.parse(
+    readFileSync(join(c.dir, "expected.json"), "utf8"),
+  ) as { body: string };
+  const res = await fetch(provider.url, {
+    method: "POST",
+    headers: provider.buildHeaders(apiKey),
+    body: expected.body,
+  });
+  if (res.status === 200) {
+    pass++;
+    console.log(`  ✓ ${c.morphism}/${c.arrow}/${c.slug}`);
+  } else {
+    fail++;
+    const text = await res.text();
+    console.log(
+      `  ✗ ${c.morphism}/${c.arrow}/${c.slug} — HTTP ${res.status}: ${text.slice(0, 200)}`,
+    );
+  }
+}
+
+async function refreshMorphismResponse(
+  c: CaseRef,
+  provider: ProviderHooks,
+  apiKey: string,
   request: Record<string, unknown>,
 ): Promise<void> {
   if (VERIFY_ONLY) return;
-  const res = await fetch(OPENAI_URL, {
+  const res = await fetch(provider.url, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${API_KEY}`,
-      "content-type": "application/json",
-    },
+    headers: provider.buildHeaders(apiKey),
     body: JSON.stringify(request),
   });
   if (res.status !== 200) {
@@ -177,28 +318,28 @@ async function refreshNonStreamingMorphism(
     );
     return;
   }
-  // Re-stringify minified.
   const body = await res.text();
   const parsed = JSON.parse(body);
   writeFileSync(join(c.dir, "input.json"), JSON.stringify(parsed) + "\n");
-  // Regenerate expected.json from current impl. Human reviews via git diff.
-  const reply = openai_response_to_luv_reply(parsed);
-  writeFileSync(join(c.dir, "expected.json"), stringify(encodeReply(reply)) + "\n");
+  const reply = provider.responseToReply(parsed);
+  writeFileSync(
+    join(c.dir, "expected.json"),
+    stringify(encodeReply(reply)) + "\n",
+  );
   written++;
   console.log(`  ↻ ${c.morphism}/${c.arrow}/${c.slug}`);
 }
 
-async function refreshStreamingMorphism(
+async function refreshMorphismStream(
   c: CaseRef,
+  provider: ProviderHooks,
+  apiKey: string,
   request: Record<string, unknown>,
 ): Promise<void> {
   if (VERIFY_ONLY) return;
-  const res = await fetch(OPENAI_URL, {
+  const res = await fetch(provider.url, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${API_KEY}`,
-      "content-type": "application/json",
-    },
+    headers: provider.buildHeaders(apiKey),
     body: JSON.stringify({ ...request, stream: true }),
   });
   if (res.status !== 200) {
@@ -210,9 +351,9 @@ async function refreshStreamingMorphism(
     return;
   }
   const raw = await res.text();
-  const chunks = parseSSE(raw);
-  writeFileSync(join(c.dir, "input.json"), JSON.stringify(chunks) + "\n");
-  const stream = openai_stream_to_luv_stream(chunks);
+  const events = provider.parseSSE(raw);
+  writeFileSync(join(c.dir, "input.json"), JSON.stringify(events) + "\n");
+  const stream = provider.streamToStream(events);
   writeFileSync(
     join(c.dir, "expected.json"),
     stringify(encodeStreamReply(stream)) + "\n",
@@ -221,86 +362,83 @@ async function refreshStreamingMorphism(
   console.log(`  ↻ ${c.morphism}/${c.arrow}/${c.slug}`);
 }
 
-async function refreshNonStreamingTransport(
+async function refreshTransportResponse(
   c: CaseRef,
+  provider: ProviderHooks,
+  apiKey: string,
   request: Record<string, unknown>,
 ): Promise<void> {
   if (VERIFY_ONLY) return;
-  const res = await fetch(OPENAI_URL, {
+  const res = await fetch(provider.url, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${API_KEY}`,
-      "content-type": "application/json",
-    },
+    headers: provider.buildHeaders(apiKey),
     body: JSON.stringify(request),
   });
   const body = await res.text();
   const envelope: HTTPResponse = {
     status: res.status,
-    headers: { "content-type": res.headers.get("content-type") ?? "application/json" },
+    headers: {
+      "content-type":
+        res.headers.get("content-type") ?? "application/json",
+    },
     body,
   };
   writeFileSync(join(c.dir, "input.json"), JSON.stringify(envelope) + "\n");
-  const reply = openai_http_response_to_luv_reply(envelope);
-  writeFileSync(join(c.dir, "expected.json"), stringify(encodeReply(reply)) + "\n");
+  const reply = provider.httpResponseToReply(envelope);
+  writeFileSync(
+    join(c.dir, "expected.json"),
+    stringify(encodeReply(reply)) + "\n",
+  );
   written++;
-  console.log(`  ↻ ${c.morphism}/${c.arrow}/${c.slug} (status ${res.status})`);
+  console.log(
+    `  ↻ ${c.morphism}/${c.arrow}/${c.slug} (status ${res.status})`,
+  );
 }
 
-async function refreshStreamingTransport(
+async function refreshTransportStream(
   c: CaseRef,
+  provider: ProviderHooks,
+  apiKey: string,
   request: Record<string, unknown>,
 ): Promise<void> {
   if (VERIFY_ONLY) return;
-  const res = await fetch(OPENAI_URL, {
+  const res = await fetch(provider.url, {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${API_KEY}`,
-      "content-type": "application/json",
-    },
+    headers: provider.buildHeaders(apiKey),
     body: JSON.stringify({ ...request, stream: true }),
   });
   const body = await res.text();
   const envelope: HTTPResponse = {
     status: res.status,
-    headers: { "content-type": res.headers.get("content-type") ?? "text/event-stream" },
+    headers: {
+      "content-type":
+        res.headers.get("content-type") ?? provider.contentTypeStream,
+    },
     body,
   };
   writeFileSync(join(c.dir, "input.json"), JSON.stringify(envelope) + "\n");
-  const stream = openai_http_stream_to_luv_stream(envelope);
+  const stream = provider.httpStreamToStream(envelope);
   writeFileSync(
     join(c.dir, "expected.json"),
     stringify(encodeStreamReply(stream)) + "\n",
   );
   written++;
-  console.log(`  ↻ ${c.morphism}/${c.arrow}/${c.slug} (status ${res.status})`);
+  console.log(
+    `  ↻ ${c.morphism}/${c.arrow}/${c.slug} (status ${res.status})`,
+  );
 }
 
-function parseSSE(body: string): unknown[] {
-  const chunks: unknown[] = [];
-  for (const event of body.split("\n\n")) {
-    for (const line of event.split("\n")) {
-      if (!line.startsWith("data: ")) continue;
-      const payload = line.slice(6);
-      if (payload === "[DONE]") return chunks;
-      try {
-        chunks.push(JSON.parse(payload));
-      } catch {
-        // skip
-      }
-    }
-  }
-  return chunks;
-}
+// ---------- Main ----------
 
 async function main() {
-  console.log(VERIFY_ONLY ? "Verifying request shapes..." : "Refreshing fixtures...");
-  const cases = discoverCases();
-  for (const c of cases) {
+  console.log(
+    VERIFY_ONLY ? "Verifying request shapes..." : "Refreshing fixtures...",
+  );
+  for (const c of discoverCases()) {
     await processCase(c);
   }
   console.log(
-    `\nSummary: ${pass} verified, ${written} refreshed, ${fail} failed`,
+    `\nSummary: ${pass} verified, ${written} refreshed, ${skipped} skipped, ${fail} failed`,
   );
   if (fail > 0) process.exit(1);
 }
