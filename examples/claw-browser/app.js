@@ -1,208 +1,317 @@
-// luv claw — browser
-// Single-page agent that uses File System Access API + luv's
-// canonical conversation type + provider-agnostic transports.
-//
-// Tools exposed to the model:
-//   list_files(path)              — list directory contents
-//   read_file(path)               — get a file's contents as text
-//   write_file(path, contents)    — write/overwrite a file (asks user approval)
-//
-// All paths are relative to the folder the user opened.
+// luv workspace — main app.
 
 import {
-  openaiClient,
-  anthropicClient,
-  LuvError,
-} from "./luv.js";
+  STATE_VERSION,
+  emptyWorkspaceState,
+  newAgent,
+  loadFromIndexedDB,
+  loadFromFolder,
+  createSyncOrchestrator,
+  getAgent,
+  activeAgents,
+  deprecatedAgents,
+  nowIso,
+  newId,
+} from "./state.js";
 
-// ---------- App state ----------
+import { agentStep, runClaw } from "./agent.js";
 
-const state = {
-  /** @type {FileSystemDirectoryHandle | null} */
-  rootDir: null,
-  /** luv canonical Conversation */
-  conv: { spec_version: "1.0", nodes: [] },
-  /** @type {string | null} current head node id */
-  head: null,
-  /** whether an agent loop is running */
-  busy: false,
-};
+// ---------- Global state ----------
 
-// ---------- Tools (closures over rootDir) ----------
+let state = emptyWorkspaceState();
+let rootDir = null;
+let apiKeys = { openai: "", anthropic: "" };
 
-const TOOL_DEFS = [
-  {
-    name: "list_files",
-    description:
-      "List the entries (files and directories) at a path relative to the project root.",
-    schema: {
-      type: "object",
-      properties: { path: { type: "string", description: "Relative path (use '.' or empty for root)" } },
-      required: ["path"],
-    },
-  },
-  {
-    name: "read_file",
-    description: "Read a UTF-8 text file at a path relative to the project root.",
-    schema: {
-      type: "object",
-      properties: { path: { type: "string" } },
-      required: ["path"],
-    },
-  },
-  {
-    name: "write_file",
-    description:
-      "Write (or overwrite) a UTF-8 text file at a path relative to the project root. " +
-      "Requires explicit user approval before each call.",
-    schema: {
-      type: "object",
-      properties: {
-        path: { type: "string" },
-        contents: { type: "string" },
-      },
-      required: ["path", "contents"],
-    },
-  },
-];
+// Active task tracking: per-agent AbortController for cancellation.
+const runningAgents = new Map(); // agentId -> AbortController
 
-async function resolvePath(rel, { createDirs = false } = {}) {
-  if (!state.rootDir) throw new Error("No folder is open. Click 'open folder' first.");
-  const segments = rel
-    .replace(/^\.\/?/, "")
-    .split("/")
-    .filter((s) => s && s !== ".");
-  let dir = state.rootDir;
-  for (let i = 0; i < segments.length - 1; i++) {
-    dir = await dir.getDirectoryHandle(segments[i], { create: createDirs });
-  }
-  return { dir, name: segments[segments.length - 1] };
-}
+// API keys live in localStorage + memory only — never written to the
+// workspace state object, so they never reach the on-disk file.
 
-async function tool_list_files(args) {
-  const path = (args.path ?? "").replace(/^\.\/?/, "");
-  let dir = state.rootDir;
-  if (path) {
-    const parts = path.split("/").filter(Boolean);
-    for (const p of parts) {
-      dir = await dir.getDirectoryHandle(p);
-    }
-  }
-  const entries = [];
-  for await (const [name, h] of dir.entries()) {
-    entries.push(`${h.kind === "directory" ? "d" : "-"} ${name}`);
-  }
-  entries.sort();
-  return entries.join("\n") || "(empty)";
-}
+const sync = createSyncOrchestrator({
+  getState: () => state,
+  getRootDir: () => rootDir,
+  onError: (e) => setStatus(`sync error: ${e.message ?? e}`),
+});
 
-async function tool_read_file(args) {
-  const { dir, name } = await resolvePath(args.path);
-  const handle = await dir.getFileHandle(name);
-  const file = await handle.getFile();
-  return await file.text();
-}
-
-async function tool_write_file(args) {
-  const { dir, name } = await resolvePath(args.path, { createDirs: true });
-  const handle = await dir.getFileHandle(name, { create: true });
-  const w = await handle.createWritable();
-  await w.write(args.contents ?? "");
-  await w.close();
-  return `wrote ${args.path} (${(args.contents ?? "").length} bytes)`;
-}
-
-/** @type {Record<string, (args: any) => Promise<string>>} */
-const TOOL_HANDLERS = {
-  list_files: tool_list_files,
-  read_file: tool_read_file,
-  write_file: tool_write_file,
-};
-
-// Tools that require user approval before executing.
-const NEEDS_APPROVAL = new Set(["write_file"]);
-
-// ---------- Provider-agnostic client ----------
-
-function makeClient() {
-  const provider = $provider.value;
-  const apiKey = $apiKey.value.trim();
-  if (!apiKey) throw new Error("API key is required");
-  if (provider === "openai") return openaiClient({ api_key: apiKey });
-  return anthropicClient({ api_key: apiKey });
-}
-
-function makeSendOpts() {
-  const provider = $provider.value;
-  const model = $model.value.trim();
-  if (provider === "openai") return { model };
-  return { model, max_tokens: 4096 };
-}
-
-function providerTools() {
-  // Each provider has slightly different tool definition shape.
-  const provider = $provider.value;
-  if (provider === "openai") {
-    return TOOL_DEFS.map((t) => ({
-      type: "function",
-      function: { name: t.name, description: t.description, parameters: t.schema },
-    }));
-  }
-  // anthropic
-  return TOOL_DEFS.map((t) => ({
-    name: t.name,
-    description: t.description,
-    input_schema: t.schema,
-  }));
+function touch() {
+  state.updated_at = nowIso();
+  updateSaveInfo();
+  sync.touch();
 }
 
 // ---------- DOM helpers ----------
 
 const $ = (id) => document.getElementById(id);
-const $conv = $("conversation");
-const $input = $("input");
-const $send = $("send");
-const $apiKey = $("api-key");
-const $provider = $("provider");
-const $model = $("model");
-const $folderInfo = $("folder-info");
-const $openFolder = $("open-folder");
+const $sidebar = $("sidebar");
+const $agentHeader = $("agent-header");
+const $conversation = $("conversation");
+const $inputRow = $("input-row");
 const $status = $("status");
+const $folderInfo = $("folder-info");
+const $saveInfo = $("save-info");
+const $openFolder = $("open-folder");
+const $openaiKey = $("openai-key");
+const $anthropicKey = $("anthropic-key");
+
 const $approval = $("approval");
 const $approvalTool = $("approval-tool");
 const $approvalArgs = $("approval-args");
 const $approvalApprove = $("approval-approve");
 const $approvalReject = $("approval-reject");
 
+const $newDlg = $("new-agent-dialog");
+const $newName = $("new-agent-name");
+const $newProvider = $("new-agent-provider");
+const $newModel = $("new-agent-model");
+const $newCancel = $("new-agent-cancel");
+const $newCreate = $("new-agent-create");
+
+const $clawDlg = $("claw-goal-dialog");
+const $clawText = $("claw-goal-text");
+const $clawMax = $("claw-max-turns");
+const $clawCancel = $("claw-cancel");
+const $clawStart = $("claw-start");
+
 function setStatus(s) { $status.textContent = s; }
-function setBusy(b) {
-  state.busy = b;
-  $send.disabled = b;
-  $input.disabled = b;
+function updateSaveInfo() {
+  const d = new Date();
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  $saveInfo.textContent = `· last change ${hh}:${mm}:${ss}`;
 }
 
-// Track DOM elements per node so streaming can update in place.
-const nodeEls = new Map();
+function defaultModelFor(provider) {
+  return provider === "openai" ? "gpt-4o-mini" : "claude-haiku-4-5";
+}
 
-function ensureNodeEl(node) {
-  let el = nodeEls.get(node.id);
-  if (el) return el;
-  el = document.createElement("div");
-  el.className = `turn role-${node.message.role}`;
-  el.innerHTML = `<div class="role-label">${node.message.role}</div>`;
-  $conv.appendChild(el);
-  nodeEls.set(node.id, el);
-  return el;
+// ---------- Rendering: sidebar ----------
+
+function renderSidebar() {
+  $sidebar.innerHTML = "";
+
+  const newBtn = document.createElement("button");
+  newBtn.className = "new-agent";
+  newBtn.textContent = "+ new agent";
+  newBtn.addEventListener("click", openNewAgentDialog);
+  $sidebar.appendChild(newBtn);
+
+  const active = activeAgents(state);
+  const dep = deprecatedAgents(state);
+
+  if (active.length > 0) {
+    const h = document.createElement("h4");
+    h.textContent = "Active";
+    $sidebar.appendChild(h);
+    for (const a of active) $sidebar.appendChild(renderAgentCard(a));
+  }
+  if (dep.length > 0) {
+    const h = document.createElement("h4");
+    h.textContent = "Deprecated";
+    $sidebar.appendChild(h);
+    for (const a of dep) $sidebar.appendChild(renderAgentCard(a));
+  }
+  if (active.length === 0 && dep.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.style.padding = "8px 16px";
+    empty.textContent = "no agents yet.";
+    $sidebar.appendChild(empty);
+  }
+}
+
+function renderAgentCard(agent) {
+  const div = document.createElement("div");
+  div.className = "agent-card";
+  if (agent.id === state.active_agent_id) div.classList.add("active");
+  if (agent.status === "deprecated") div.classList.add("deprecated");
+
+  const name = document.createElement("div");
+  name.className = "name";
+  name.textContent = agent.name;
+  div.appendChild(name);
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+
+  const mode = document.createElement("span");
+  mode.className = `mode-badge ${agent.mode}`;
+  mode.textContent = agent.mode;
+  meta.appendChild(mode);
+
+  const status = document.createElement("span");
+  const running = runningAgents.has(agent.id);
+  const cls = agent.status === "deprecated"
+    ? "deprecated"
+    : running
+    ? "running"
+    : "idle";
+  status.className = `status-badge ${cls}`;
+  status.textContent = cls;
+  meta.appendChild(status);
+
+  meta.appendChild(document.createTextNode(agent.model));
+  div.appendChild(meta);
+
+  div.addEventListener("click", () => {
+    state.active_agent_id = agent.id;
+    touch();
+    render();
+  });
+  return div;
+}
+
+// ---------- Rendering: active-agent header ----------
+
+function renderAgentHeader() {
+  $agentHeader.innerHTML = "";
+  const a = activeAgent();
+  if (!a) {
+    $agentHeader.style.display = "none";
+    return;
+  }
+  $agentHeader.style.display = "";
+
+  const name = document.createElement("input");
+  name.className = "agent-name";
+  name.value = a.name;
+  name.addEventListener("change", () => {
+    a.name = name.value || "(unnamed)";
+    a.updated_at = nowIso();
+    touch();
+    renderSidebar();
+  });
+  $agentHeader.appendChild(name);
+
+  const sep1 = document.createElement("span");
+  sep1.style.color = "var(--fg-deep-dim)";
+  sep1.textContent = "·";
+  $agentHeader.appendChild(sep1);
+
+  // Mode toggle
+  const modeSel = document.createElement("select");
+  modeSel.innerHTML = `
+    <option value="auto">auto</option>
+    <option value="claw">claw</option>
+  `;
+  modeSel.value = a.mode;
+  modeSel.addEventListener("change", () => {
+    const newMode = modeSel.value;
+    if (newMode === a.mode) return;
+    if (newMode === "claw") {
+      modeSel.value = a.mode; // revert until goal entered
+      openClawDialog();
+    } else {
+      switchToAuto(a);
+    }
+  });
+  $agentHeader.appendChild(makeLabel("mode"));
+  $agentHeader.appendChild(modeSel);
+
+  // Provider
+  const provSel = document.createElement("select");
+  provSel.innerHTML = `
+    <option value="openai">openai</option>
+    <option value="anthropic">anthropic</option>
+  `;
+  provSel.value = a.provider;
+  provSel.addEventListener("change", () => {
+    a.provider = provSel.value;
+    a.model = defaultModelFor(a.provider);
+    a.updated_at = nowIso();
+    touch();
+    renderAgentHeader();
+    renderSidebar();
+  });
+  $agentHeader.appendChild(makeLabel("provider"));
+  $agentHeader.appendChild(provSel);
+
+  // Model
+  const modelInput = document.createElement("input");
+  modelInput.type = "text";
+  modelInput.value = a.model;
+  modelInput.style.width = "180px";
+  modelInput.addEventListener("change", () => {
+    a.model = modelInput.value;
+    a.updated_at = nowIso();
+    touch();
+    renderSidebar();
+  });
+  $agentHeader.appendChild(makeLabel("model"));
+  $agentHeader.appendChild(modelInput);
+
+  // Spacer
+  const spacer = document.createElement("span");
+  spacer.style.flex = "1";
+  $agentHeader.appendChild(spacer);
+
+  // Deprecate / reactivate
+  if (a.status === "active") {
+    const dep = document.createElement("button");
+    dep.className = "danger";
+    dep.textContent = "deprecate";
+    dep.addEventListener("click", () => deprecateAgent(a));
+    $agentHeader.appendChild(dep);
+  } else {
+    const re = document.createElement("button");
+    re.textContent = "reactivate";
+    re.addEventListener("click", () => reactivateAgent(a));
+    $agentHeader.appendChild(re);
+  }
+}
+
+function makeLabel(text) {
+  const s = document.createElement("span");
+  s.style.color = "var(--fg-dim)";
+  s.style.fontSize = "11px";
+  s.textContent = text;
+  return s;
+}
+
+// ---------- Rendering: conversation ----------
+
+function renderConversation() {
+  $conversation.innerHTML = "";
+  const a = activeAgent();
+  if (!a) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.innerHTML = `
+      <div>no agent selected.</div>
+      <div style="margin-top: 8px; font-size: 12px;">create one in the sidebar.</div>
+    `;
+    $conversation.appendChild(empty);
+    return;
+  }
+  if (a.conversation.nodes.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = a.mode === "claw"
+      ? "claw mode — set a goal to start."
+      : "type a message to start.";
+    $conversation.appendChild(empty);
+    return;
+  }
+  // Walk the active branch from root → head (linear).
+  for (const node of a.conversation.nodes) {
+    $conversation.appendChild(renderNode(node));
+  }
+  $conversation.scrollTop = $conversation.scrollHeight;
 }
 
 function renderNode(node) {
-  const el = ensureNodeEl(node);
-  // Clear all but the role label
-  while (el.children.length > 1) el.removeChild(el.lastChild);
+  const el = document.createElement("div");
+  el.className = `turn role-${node.message.role}`;
+  el.dataset.nodeId = node.id;
+  const role = document.createElement("div");
+  role.className = "role-label";
+  role.textContent = node.message.role;
+  el.appendChild(role);
   for (const block of node.message.content) {
     el.appendChild(renderBlock(block));
   }
-  el.scrollIntoView({ behavior: "smooth", block: "end" });
+  return el;
 }
 
 function renderBlock(block) {
@@ -228,6 +337,150 @@ function escapeHtml(s) {
   return String(s).replace(/[<>&]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c]));
 }
 
+// Update or append a single node (for live streaming).
+function updateNodeInDom(node) {
+  const a = activeAgent();
+  if (!a) return;
+  let el = $conversation.querySelector(`[data-node-id="${node.id}"]`);
+  if (!el) {
+    el = renderNode(node);
+    $conversation.appendChild(el);
+  } else {
+    // Re-render content blocks.
+    while (el.children.length > 1) el.removeChild(el.lastChild);
+    for (const block of node.message.content) {
+      el.appendChild(renderBlock(block));
+    }
+  }
+  $conversation.scrollTop = $conversation.scrollHeight;
+}
+
+// ---------- Rendering: input row ----------
+
+function renderInputRow() {
+  $inputRow.innerHTML = "";
+  const a = activeAgent();
+  if (!a) return;
+
+  if (a.status === "deprecated") {
+    const btn = document.createElement("button");
+    btn.className = "action-btn warn";
+    btn.style.width = "100%";
+    btn.textContent = "reactivate to send";
+    btn.addEventListener("click", () => reactivateAgent(a));
+    $inputRow.appendChild(btn);
+    return;
+  }
+
+  if (runningAgents.has(a.id)) {
+    const btn = document.createElement("button");
+    btn.className = "action-btn danger";
+    btn.style.width = "100%";
+    btn.textContent = "stop";
+    btn.addEventListener("click", () => stopAgent(a));
+    $inputRow.appendChild(btn);
+    return;
+  }
+
+  if (a.mode === "claw") {
+    const btn = document.createElement("button");
+    btn.className = "action-btn";
+    btn.style.width = "100%";
+    btn.textContent = "claw idle — switch to auto or set a new goal";
+    btn.addEventListener("click", () => openClawDialog());
+    $inputRow.appendChild(btn);
+    return;
+  }
+
+  // Auto mode: textarea + send.
+  const input = document.createElement("textarea");
+  input.id = "input";
+  input.placeholder = "type a message...";
+  input.rows = 1;
+  $inputRow.appendChild(input);
+
+  const send = document.createElement("button");
+  send.id = "send";
+  send.className = "action-btn";
+  send.textContent = "send";
+  $inputRow.appendChild(send);
+
+  const ready = canSend();
+  send.disabled = !ready;
+  input.disabled = !ready;
+
+  const submit = () => {
+    const text = input.value.trim();
+    if (!text || !canSend()) return;
+    input.value = "";
+    sendUserMessage(text);
+  };
+  send.addEventListener("click", submit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submit();
+    }
+  });
+  setTimeout(() => input.focus(), 0);
+}
+
+function canSend() {
+  const a = activeAgent();
+  if (!a) return false;
+  if (a.status === "deprecated") return false;
+  if (runningAgents.has(a.id)) return false;
+  if (!rootDir) return false;
+  const key = apiKeys[a.provider];
+  return !!key;
+}
+
+// ---------- Render orchestrator ----------
+
+function render() {
+  renderSidebar();
+  renderAgentHeader();
+  renderConversation();
+  renderInputRow();
+}
+
+// ---------- State queries ----------
+
+function activeAgent() {
+  return getAgent(state, state.active_agent_id);
+}
+
+// ---------- Agent lifecycle ----------
+
+function deprecateAgent(agent) {
+  if (runningAgents.has(agent.id)) stopAgent(agent);
+  agent.status = "deprecated";
+  agent.updated_at = nowIso();
+  touch();
+  render();
+}
+
+function reactivateAgent(agent) {
+  agent.status = "active";
+  agent.updated_at = nowIso();
+  touch();
+  render();
+}
+
+function switchToAuto(agent) {
+  if (runningAgents.has(agent.id)) stopAgent(agent);
+  agent.mode = "auto";
+  agent.claw_goal = undefined;
+  agent.updated_at = nowIso();
+  touch();
+  render();
+}
+
+function stopAgent(agent) {
+  const ctl = runningAgents.get(agent.id);
+  if (ctl) ctl.abort();
+}
+
 // ---------- Approval modal ----------
 
 function askApproval(toolName, args) {
@@ -235,174 +488,202 @@ function askApproval(toolName, args) {
     $approvalTool.textContent = `Tool: ${toolName}`;
     $approvalArgs.textContent = JSON.stringify(args, null, 2);
     $approval.showModal();
+    const onApprove = () => { cleanup(); resolve(true); };
+    const onReject = () => { cleanup(); resolve(false); };
     const cleanup = () => {
       $approvalApprove.removeEventListener("click", onApprove);
       $approvalReject.removeEventListener("click", onReject);
       $approval.close();
     };
-    const onApprove = () => { cleanup(); resolve(true); };
-    const onReject = () => { cleanup(); resolve(false); };
     $approvalApprove.addEventListener("click", onApprove);
     $approvalReject.addEventListener("click", onReject);
   });
 }
 
-// ---------- Conversation operations ----------
+// ---------- Send (auto mode) ----------
 
-function newId() {
-  return `n_${Math.random().toString(36).slice(2, 10)}`;
-}
+async function sendUserMessage(text) {
+  const a = activeAgent();
+  if (!a) return;
 
-function appendNode(role, content) {
-  const node = {
-    id: newId(),
-    parent_id: state.head,
-    message: { role, content },
+  // Append user node.
+  const userNode = {
+    id: newId("n"),
+    parent_id: a.head,
+    message: { role: "user", content: [{ kind: "text", text }] },
   };
-  state.conv.nodes.push(node);
-  state.head = node.id;
-  renderNode(node);
-  return node;
-}
+  a.conversation.nodes.push(userNode);
+  a.head = userNode.id;
+  a.updated_at = nowIso();
+  updateNodeInDom(userNode);
+  touch();
 
-function updateNode(node, content) {
-  node.message.content = content;
-  renderNode(node);
-}
+  // Run agent step loop until no more tool calls or aborted.
+  const ctl = new AbortController();
+  runningAgents.set(a.id, ctl);
+  render();
 
-// ---------- Agent loop ----------
-
-async function runTurn(userText) {
-  appendNode("user", [{ kind: "text", text: userText }]);
-
-  const client = makeClient();
-  const opts = { ...makeSendOpts(), tools: providerTools() };
-
-  for (let turn = 0; turn < 20; turn++) {
-    setStatus(`turn ${turn + 1} — sending to ${$provider.value}...`);
-
-    // Build a placeholder assistant node so streaming has a target.
-    const assistantNode = appendNode("assistant", []);
-    const blocks = [];
-    let currentBlock = null;
-
-    try {
-      for await (const event of client.stream(state.conv, opts)) {
-        if (event.kind === "block_start") {
-          currentBlock = JSON.parse(JSON.stringify(event.block));
-          blocks.push(currentBlock);
-          updateNode(assistantNode, blocks);
-        } else if (event.kind === "text_delta" && currentBlock?.kind === "text") {
-          currentBlock.text += event.text;
-          updateNode(assistantNode, blocks);
-        } else if (event.kind === "args_delta" && currentBlock?.kind === "tool_call") {
-          currentBlock.args += event.args;
-          updateNode(assistantNode, blocks);
-        } else if (event.kind === "block_end") {
-          currentBlock = null;
-        }
-        // message_start / message_end ignored
-      }
-    } catch (e) {
-      let category = "unknown";
-      let msg;
-      let details = "{}";
-      if (e instanceof LuvError) {
-        category = e.data.category;
-        msg = e.data.message;
-        details = e.data.details;
-      } else {
-        msg = String(e);
-      }
-      blocks.push({ kind: "error", category, message: msg, details });
-      updateNode(assistantNode, blocks);
-      setStatus(`failed: [${category}] ${msg}`);
-      return;
+  try {
+    for (let turn = 0; turn < 20; turn++) {
+      if (ctl.signal.aborted) break;
+      setStatus(`${a.name}: turn ${turn + 1}...`);
+      const done = await agentStep({
+        agent: a,
+        apiKey: apiKeys[a.provider],
+        onNodeAppended: (n) => { updateNodeInDom(n); touch(); },
+        onNodeUpdated: (n) => { updateNodeInDom(n); touch(); },
+        askApproval,
+        rootDirGetter: () => rootDir,
+        setStatus,
+        signal: ctl.signal,
+      });
+      if (done) break;
     }
-
-    const toolCalls = blocks.filter((b) => b.kind === "tool_call");
-    if (toolCalls.length === 0) {
-      setStatus("done.");
-      return;
-    }
-
-    setStatus(`turn ${turn + 1} — running ${toolCalls.length} tool call(s)...`);
-    const resultBlocks = [];
-    for (const tc of toolCalls) {
-      let result;
-      try {
-        const args = JSON.parse(tc.args);
-        if (NEEDS_APPROVAL.has(tc.name)) {
-          const ok = await askApproval(tc.name, args);
-          if (!ok) {
-            result = `user rejected the call to ${tc.name}`;
-          } else {
-            result = await TOOL_HANDLERS[tc.name](args);
-          }
-        } else {
-          result = await TOOL_HANDLERS[tc.name](args);
-        }
-      } catch (e) {
-        result = `error: ${e?.message ?? String(e)}`;
-      }
-      resultBlocks.push({ kind: "tool_result", call_id: tc.id, text: result });
-    }
-    appendNode("user", resultBlocks);
+  } finally {
+    runningAgents.delete(a.id);
+    render();
   }
-
-  setStatus("hit max turns; stopping.");
 }
 
-// ---------- Event wiring ----------
+// ---------- Claw mode ----------
+
+function openClawDialog() {
+  $clawText.value = "";
+  $clawMax.value = 20;
+  $clawDlg.showModal();
+}
+
+$clawCancel.addEventListener("click", () => $clawDlg.close());
+$clawStart.addEventListener("click", async () => {
+  const goal = $clawText.value.trim();
+  const maxTurns = parseInt($clawMax.value, 10) || 20;
+  if (!goal) return;
+  $clawDlg.close();
+  const a = activeAgent();
+  if (!a) return;
+  a.mode = "claw";
+  a.updated_at = nowIso();
+  touch();
+  render();
+  await startClaw(a, goal, maxTurns);
+});
+
+async function startClaw(agent, goal, maxTurns) {
+  const ctl = new AbortController();
+  runningAgents.set(agent.id, ctl);
+  render();
+  try {
+    await runClaw({
+      agent,
+      goal,
+      maxTurns,
+      apiKey: apiKeys[agent.provider],
+      onNodeAppended: (n) => { updateNodeInDom(n); touch(); },
+      onNodeUpdated: (n) => { updateNodeInDom(n); touch(); },
+      askApproval,
+      rootDirGetter: () => rootDir,
+      setStatus,
+      signal: ctl.signal,
+    });
+  } finally {
+    runningAgents.delete(agent.id);
+    render();
+  }
+}
+
+// ---------- New agent dialog ----------
+
+function openNewAgentDialog() {
+  $newName.value = `agent ${state.agents.length + 1}`;
+  $newProvider.value = "openai";
+  $newModel.value = defaultModelFor("openai");
+  $newDlg.showModal();
+  setTimeout(() => $newName.focus(), 0);
+}
+
+$newProvider.addEventListener("change", () => {
+  $newModel.value = defaultModelFor($newProvider.value);
+});
+$newCancel.addEventListener("click", () => $newDlg.close());
+$newCreate.addEventListener("click", () => {
+  const a = newAgent({
+    name: $newName.value || `agent ${state.agents.length + 1}`,
+    provider: $newProvider.value,
+    model: $newModel.value || defaultModelFor($newProvider.value),
+  });
+  state.agents.push(a);
+  state.active_agent_id = a.id;
+  touch();
+  render();
+  $newDlg.close();
+});
+
+// ---------- Folder open ----------
 
 $openFolder.addEventListener("click", async () => {
   try {
     const handle = await window.showDirectoryPicker({ mode: "readwrite" });
-    state.rootDir = handle;
+    rootDir = handle;
     $folderInfo.textContent = handle.name + "/";
-    updateSendButton();
+
+    // Try to load workspace from folder.
+    const fromFolder = await loadFromFolder(handle);
+    if (fromFolder && fromFolder.version === STATE_VERSION) {
+      state = fromFolder;
+      setStatus(`loaded workspace from ${handle.name}/.luv-workspace.json`);
+    } else if (fromFolder && fromFolder.version !== STATE_VERSION) {
+      setStatus(
+        `workspace file version ${fromFolder.version} not supported (expected ${STATE_VERSION}); ignoring`,
+      );
+    } else {
+      setStatus(`no existing workspace in ${handle.name}; using local state.`);
+      touch(); // create the file
+    }
+    render();
   } catch (e) {
-    setStatus(`folder open canceled: ${e.message}`);
+    if (e.name !== "AbortError") setStatus(`folder open: ${e.message}`);
   }
 });
 
-$apiKey.addEventListener("input", updateSendButton);
-$provider.addEventListener("change", () => {
-  $model.value = $provider.value === "openai" ? "gpt-4o-mini" : "claude-haiku-4-5";
-  updateSendButton();
+// ---------- API key persistence ----------
+
+$openaiKey.addEventListener("input", () => {
+  apiKeys.openai = $openaiKey.value;
+  localStorage.setItem("luv:openai_key", apiKeys.openai);
+  render();
 });
-
-$send.addEventListener("click", () => onSend());
-$input.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey && !state.busy) {
-    e.preventDefault();
-    onSend();
-  }
+$anthropicKey.addEventListener("input", () => {
+  apiKeys.anthropic = $anthropicKey.value;
+  localStorage.setItem("luv:anthropic_key", apiKeys.anthropic);
+  render();
 });
-
-async function onSend() {
-  const text = $input.value.trim();
-  if (!text || state.busy) return;
-  $input.value = "";
-  setBusy(true);
-  try {
-    await runTurn(text);
-  } finally {
-    setBusy(false);
-  }
-}
-
-function updateSendButton() {
-  $send.disabled = !($apiKey.value.trim() && state.rootDir && !state.busy);
-}
 
 // ---------- Boot ----------
 
-if (!window.showDirectoryPicker) {
-  setStatus(
-    "File System Access API not available. Use Chrome, Edge, or another Chromium-based browser.",
-  );
-  $openFolder.disabled = true;
-} else {
-  setStatus("paste an API key and open a folder to start.");
+async function boot() {
+  if (!window.showDirectoryPicker) {
+    setStatus(
+      "File System Access API not available. Use Chrome, Edge, or a Chromium-based browser.",
+    );
+    $openFolder.disabled = true;
+    return;
+  }
+
+  // Restore API keys from localStorage.
+  apiKeys.openai = localStorage.getItem("luv:openai_key") ?? "";
+  apiKeys.anthropic = localStorage.getItem("luv:anthropic_key") ?? "";
+  $openaiKey.value = apiKeys.openai;
+  $anthropicKey.value = apiKeys.anthropic;
+
+  // Load most recent workspace from IDB if any.
+  const fromIdb = await loadFromIndexedDB();
+  if (fromIdb && fromIdb.version === STATE_VERSION) {
+    state = fromIdb;
+    setStatus(
+      "restored from local cache. open a folder to sync changes to disk.",
+    );
+  }
+  render();
 }
+
+boot();

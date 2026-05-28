@@ -2,56 +2,133 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>luv claw — browser</title>
+  <title>luv workspace</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {
       --bg: #0f1115;
       --bg-2: #161922;
       --bg-3: #1d2230;
+      --bg-4: #252b3c;
       --fg: #d8dae0;
       --fg-dim: #8e93a3;
+      --fg-deep-dim: #5a6072;
       --accent: #7ea2ff;
+      --accent-2: #5e85e0;
       --user: #2a3a5e;
       --assistant: #1d2230;
       --tool: #2a2a2e;
       --error: #5e2a2a;
       --ok: #2a5e3c;
+      --warn: #5e4d2a;
       --border: #2a2f3e;
     }
     * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
     body {
-      margin: 0; padding: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
       background: var(--bg); color: var(--fg);
-      height: 100vh; display: flex; flex-direction: column;
+      display: grid; grid-template-rows: auto 1fr auto;
     }
     header {
-      padding: 12px 16px;
-      background: var(--bg-2);
+      padding: 10px 16px; background: var(--bg-2);
       border-bottom: 1px solid var(--border);
-      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      font-size: 13px;
     }
-    header > * { font-size: 13px; }
     header label { color: var(--fg-dim); }
-    header select, header input[type="password"], header input[type="text"] {
+    header input, header select, header button {
       background: var(--bg-3); color: var(--fg);
       border: 1px solid var(--border); border-radius: 4px;
       padding: 4px 8px; font: inherit;
     }
-    header input[type="password"], header input[type="text"] { min-width: 280px; }
-    header button {
+    header input[type="password"] { min-width: 200px; }
+    header button { cursor: pointer; }
+    header button:hover { background: var(--bg-4); }
+    header button.primary {
+      background: var(--accent); color: #0c0e15; border-color: var(--accent);
+      font-weight: 600;
+    }
+    header button.primary:hover { background: var(--accent-2); }
+    .folder-info { color: var(--fg-dim); font-family: monospace; margin-left: 4px; }
+    .save-info { color: var(--fg-deep-dim); font-size: 11px; margin-left: 4px; }
+    .sep { flex: 1; }
+
+    main { display: grid; grid-template-columns: 240px 1fr; overflow: hidden; }
+    aside {
+      background: var(--bg-2); border-right: 1px solid var(--border);
+      overflow-y: auto; padding: 12px 0;
+    }
+    #pane { display: grid; grid-template-rows: auto 1fr auto; overflow: hidden; }
+
+    aside h4 {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--fg-dim); padding: 6px 16px 6px; margin: 0;
+    }
+    aside button.new-agent {
+      width: calc(100% - 24px); margin: 6px 12px;
+      background: var(--accent); color: #0c0e15; border: none;
+      padding: 6px; border-radius: 6px; font: inherit; cursor: pointer;
+      font-weight: 600;
+    }
+    aside button.new-agent:hover { background: var(--accent-2); }
+    .agent-card {
+      padding: 8px 16px; cursor: pointer;
+      border-left: 3px solid transparent;
+    }
+    .agent-card:hover { background: var(--bg-3); }
+    .agent-card.active { background: var(--bg-3); border-left-color: var(--accent); }
+    .agent-card.deprecated { opacity: 0.55; }
+    .agent-card .name { font-size: 13px; }
+    .agent-card .meta {
+      font-size: 11px; color: var(--fg-dim); display: flex; gap: 6px; margin-top: 2px;
+    }
+    .mode-badge {
+      font-size: 10px; padding: 1px 6px; border-radius: 4px;
+      font-weight: 600; letter-spacing: 0.03em;
+    }
+    .mode-badge.auto { background: var(--bg-4); color: var(--fg); }
+    .mode-badge.claw { background: var(--accent); color: #0c0e15; }
+    .status-badge {
+      font-size: 10px; padding: 1px 6px; border-radius: 4px;
+    }
+    .status-badge.idle { background: var(--bg-4); color: var(--fg-dim); }
+    .status-badge.running { background: var(--ok); color: #fff; }
+    .status-badge.deprecated { background: var(--warn); color: #fff; }
+
+    .agent-header {
+      padding: 10px 16px; background: var(--bg-2);
+      border-bottom: 1px solid var(--border);
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      font-size: 13px;
+    }
+    .agent-header .agent-name {
+      font-weight: 600; font-size: 14px;
+      background: transparent; border: none; color: var(--fg);
+      padding: 4px 6px; border-radius: 4px; min-width: 100px;
+    }
+    .agent-header .agent-name:hover, .agent-header .agent-name:focus {
+      background: var(--bg-3);
+    }
+    .agent-header select, .agent-header input {
+      background: var(--bg-3); color: var(--fg);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 4px 8px; font: inherit;
+    }
+    .agent-header button {
       background: var(--bg-3); color: var(--fg);
       border: 1px solid var(--border); border-radius: 4px;
       padding: 4px 10px; cursor: pointer; font: inherit;
     }
-    header button:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
-    header button:disabled { opacity: 0.4; cursor: not-allowed; }
-    #folder-info { color: var(--fg-dim); font-family: monospace; }
+    .agent-header button:hover { background: var(--bg-4); }
+    .agent-header button.danger { color: #f5a0a0; }
 
     #conversation {
-      flex: 1; overflow-y: auto;
-      padding: 16px; max-width: 900px; margin: 0 auto; width: 100%;
+      overflow-y: auto; padding: 16px;
+      max-width: 1000px; margin: 0 auto; width: 100%;
+    }
+    .empty-state {
+      padding: 40px 20px; text-align: center; color: var(--fg-dim);
     }
     .turn {
       margin-bottom: 14px; padding: 10px 14px; border-radius: 8px;
@@ -65,7 +142,9 @@
     }
     .turn .block { margin-top: 6px; }
     .turn .block.text { white-space: pre-wrap; word-break: break-word; }
-    .turn .block.tool-call, .turn .block.tool-result, .turn .block.error {
+    .turn .block.tool-call,
+    .turn .block.tool-result,
+    .turn .block.error {
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
       font-size: 12px; padding: 8px; border-radius: 6px;
       background: var(--tool); white-space: pre-wrap; word-break: break-word;
@@ -78,7 +157,7 @@
       padding: 12px 16px; background: var(--bg-2);
       border-top: 1px solid var(--border);
       display: flex; gap: 8px; align-items: flex-end;
-      max-width: 900px; margin: 0 auto; width: 100%;
+      max-width: 1000px; margin: 0 auto; width: 100%;
     }
     #input {
       flex: 1; background: var(--bg-3); color: var(--fg);
@@ -86,13 +165,18 @@
       padding: 8px 10px; font: inherit; resize: vertical;
       min-height: 38px; max-height: 200px;
     }
-    #send {
+    .action-btn {
       background: var(--accent); color: #0c0e15;
       border: none; border-radius: 6px;
       padding: 8px 16px; cursor: pointer; font-weight: 600;
     }
-    #send:disabled { opacity: 0.4; cursor: not-allowed; }
-    #status { color: var(--fg-dim); font-size: 12px; padding: 4px 16px; }
+    .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .action-btn.danger { background: var(--error); color: #fff; }
+    .action-btn.warn { background: var(--warn); color: #fff; }
+    #status {
+      color: var(--fg-dim); font-size: 12px; padding: 4px 16px;
+      background: var(--bg-2); border-top: 1px solid var(--border);
+    }
 
     dialog {
       background: var(--bg-2); color: var(--fg);
@@ -101,44 +185,58 @@
     }
     dialog::backdrop { background: rgba(0,0,0,0.5); }
     dialog h3 { margin: 0 0 8px 0; }
+    dialog p { margin: 4px 0; color: var(--fg-dim); font-size: 13px; }
+    dialog label { display: block; font-size: 12px; color: var(--fg-dim); margin: 8px 0 4px; }
+    dialog input, dialog select, dialog textarea {
+      width: 100%;
+      background: var(--bg-3); color: var(--fg);
+      border: 1px solid var(--border); border-radius: 4px;
+      padding: 6px 8px; font: inherit;
+    }
+    dialog textarea { min-height: 80px; resize: vertical; }
     dialog pre {
       background: var(--bg-3); padding: 8px; border-radius: 4px;
       font-size: 12px; white-space: pre-wrap; word-break: break-word;
       max-height: 240px; overflow: auto;
     }
-    dialog .actions { display: flex; gap: 8px; margin-top: 12px; justify-content: flex-end; }
+    dialog .actions {
+      display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end;
+    }
     dialog button {
       background: var(--bg-3); color: var(--fg);
       border: 1px solid var(--border); border-radius: 4px;
       padding: 6px 12px; cursor: pointer;
     }
-    dialog button.primary { background: var(--accent); color: #0c0e15; border-color: var(--accent); font-weight: 600; }
-    dialog button.danger { background: var(--error); border-color: var(--error); }
+    dialog button.primary {
+      background: var(--accent); color: #0c0e15; border-color: var(--accent);
+      font-weight: 600;
+    }
+    dialog button.danger { background: var(--error); border-color: var(--error); color: #fff; }
   </style>
 </head>
 <body>
   <header>
-    <label>provider</label>
-    <select id="provider">
-      <option value="openai">OpenAI</option>
-      <option value="anthropic">Anthropic</option>
-    </select>
-    <label>model</label>
-    <input id="model" type="text" value="gpt-4o-mini" />
-    <label>api key</label>
-    <input id="api-key" type="password" placeholder="sk-... / sk-ant-..." />
-    <button id="open-folder">open folder</button>
-    <span id="folder-info">no folder open</span>
+    <strong>luv workspace</strong>
+    <span class="sep"></span>
+    <label>openai</label>
+    <input id="openai-key" type="password" placeholder="sk-..." />
+    <label>anthropic</label>
+    <input id="anthropic-key" type="password" placeholder="sk-ant-..." />
+    <button id="open-folder" class="primary">open folder</button>
+    <span id="folder-info" class="folder-info">no folder</span>
+    <span id="save-info" class="save-info"></span>
   </header>
 
-  <div id="conversation"></div>
+  <main>
+    <aside id="sidebar"></aside>
+    <div id="pane">
+      <div id="agent-header" class="agent-header"></div>
+      <div id="conversation"></div>
+      <div id="input-row"></div>
+    </div>
+  </main>
 
-  <div id="status"></div>
-
-  <div id="input-row">
-    <textarea id="input" placeholder="type a message..." rows="1"></textarea>
-    <button id="send" disabled>send</button>
-  </div>
+  <div id="status">open a folder to begin.</div>
 
   <dialog id="approval">
     <h3>Approve tool call?</h3>
@@ -147,6 +245,36 @@
     <div class="actions">
       <button id="approval-reject" class="danger">reject</button>
       <button id="approval-approve" class="primary">approve</button>
+    </div>
+  </dialog>
+
+  <dialog id="new-agent-dialog">
+    <h3>New agent</h3>
+    <label>Name</label>
+    <input id="new-agent-name" type="text" placeholder="researcher, coder, helper..." />
+    <label>Provider</label>
+    <select id="new-agent-provider">
+      <option value="openai">OpenAI</option>
+      <option value="anthropic">Anthropic</option>
+    </select>
+    <label>Model</label>
+    <input id="new-agent-model" type="text" />
+    <div class="actions">
+      <button id="new-agent-cancel">cancel</button>
+      <button id="new-agent-create" class="primary">create</button>
+    </div>
+  </dialog>
+
+  <dialog id="claw-goal-dialog">
+    <h3>Switch to claw mode</h3>
+    <p>Give the agent a goal. It will run autonomously, calling tools until done or out of turns.</p>
+    <label>Goal</label>
+    <textarea id="claw-goal-text" placeholder="e.g., add unit tests for utils.js and run them"></textarea>
+    <label>Max turns</label>
+    <input id="claw-max-turns" type="number" value="20" min="1" max="200" />
+    <div class="actions">
+      <button id="claw-cancel">cancel</button>
+      <button id="claw-start" class="primary">start claw</button>
     </div>
   </dialog>
 
