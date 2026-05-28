@@ -304,10 +304,19 @@ async function runTurn(userText) {
         // message_start / message_end ignored
       }
     } catch (e) {
-      const msg = e instanceof LuvError ? `${e.data.category}: ${e.data.message}` : String(e);
-      blocks.push({ kind: "error", category: "unknown", message: msg, details: "{}" });
+      let category = "unknown";
+      let msg;
+      let details = "{}";
+      if (e instanceof LuvError) {
+        category = e.data.category;
+        msg = e.data.message;
+        details = e.data.details;
+      } else {
+        msg = String(e);
+      }
+      blocks.push({ kind: "error", category, message: msg, details });
       updateNode(assistantNode, blocks);
-      setStatus(`failed: ${msg}`);
+      setStatus(`failed: [${category}] ${msg}`);
       return;
     }
 

@@ -285,6 +285,7 @@ Anthropic values may collapse to the same canonical output.
 | Node `id` and `parent_id` | Not carried into the Anthropic request; they exist only at the luv side. |
 | `spec_version` | Not carried into the Anthropic request; it is metadata about luv version. |
 | `error` blocks in conversation history | Anthropic has no canonical representation for in-conversation errors; `error` blocks are dropped when encoding history. Apps that want to surface prior errors to the model must convert them to `text` blocks themselves. |
+| Assistant or user message whose content blocks are all dropped (e.g., only `error` blocks) | Emitted as `{role, content: ""}` rather than `{role, content: []}`. Anthropic rejects empty content arrays; the empty string is the safe equivalent. No information is conveyed in this case. |
 | Tool args canonical JSON whitespace/ordering | `args` is JSON-parsed to an object before sending; the original canonical-JSON byte sequence is lost (only the structured value survives). The morphism re-stringifies on receive in insertion order. |
 
 ### `anthropic_response_to_luv_reply`

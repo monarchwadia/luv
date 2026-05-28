@@ -779,7 +779,7 @@ function luv_conversation_to_openai_request(conv, opts) {
       }
       const out = {
         role: "assistant",
-        content: textPieces.length > 0 ? textPieces.join("") : null
+        content: textPieces.length > 0 ? textPieces.join("") : toolCalls.length > 0 ? null : ""
       };
       if (toolCalls.length > 0)
         out.tool_calls = toolCalls;
@@ -1244,7 +1244,7 @@ function luv_conversation_to_anthropic_request(conv, opts) {
         if (cb !== null)
           arr.push(cb);
       }
-      content = arr;
+      content = arr.length > 0 ? arr : "";
     }
     initial.push({ role: m.role, content });
   }

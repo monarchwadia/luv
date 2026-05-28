@@ -52,7 +52,9 @@ export function luv_conversation_to_anthropic_request(
         const cb = blockToAnthropic(b);
         if (cb !== null) arr.push(cb);
       }
-      content = arr;
+      // If every block dropped (e.g., only error blocks), Anthropic
+      // rejects content: []. Fall back to empty string.
+      content = arr.length > 0 ? arr : "";
     }
     initial.push({ role: m.role, content });
   }

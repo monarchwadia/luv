@@ -266,6 +266,7 @@ this list is exhaustive.
 | Node `id` and `parent_id` | Not carried into the OpenAI request; they exist only at the luv side. |
 | `spec_version` | Not carried into the OpenAI request; it is metadata about which luv version the canonical value conforms to. |
 | `error` blocks in conversation history | OpenAI has no canonical representation for in-conversation errors; `error` blocks are dropped when encoding history into `messages`. Apps that want to surface prior errors to the model must convert them to `text` blocks themselves before sending. |
+| Assistant message whose content blocks are all dropped (e.g., only `error` blocks) and which has no `tool_call` blocks | Emitted as `{role: "assistant", content: ""}` rather than `content: null`. OpenAI rejects `content: null` unless `tool_calls` is present; the empty string is the safe equivalent. No information is conveyed in this case. |
 
 ### `openai_response_to_luv_reply`
 

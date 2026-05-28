@@ -72,11 +72,19 @@ export function luv_conversation_to_openai_request(
       }
 
       // Canonical key order: role, content, [tool_calls].
-      // When there are tool_calls, content is null (per OpenAI's convention
-      // and the morphism's field mapping).
+      // content is null only when tool_calls are present (OpenAI's
+      // convention). If both text and tool_calls are empty (e.g., the
+      // assistant message contained only error blocks that the morphism
+      // dropped), emit content: "" rather than null to satisfy OpenAI's
+      // request validation.
       const out: Record<string, unknown> = {
         role: "assistant",
-        content: textPieces.length > 0 ? textPieces.join("") : null,
+        content:
+          textPieces.length > 0
+            ? textPieces.join("")
+            : toolCalls.length > 0
+              ? null
+              : "",
       };
       if (toolCalls.length > 0) out.tool_calls = toolCalls;
       messages.push(out);
