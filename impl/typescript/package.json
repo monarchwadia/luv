@@ -43,7 +43,6 @@
     "record": "bun run scripts/record.ts",
     "verify": "bun run scripts/record.ts --verify",
     "smoke": "bun run scripts/smoke.ts",
-    "bundle:browser": "bun run scripts/bundle-browser.ts",
     "prepublishOnly": "bun run build"
   },
   "engines": {

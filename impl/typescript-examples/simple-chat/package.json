@@ -1,0 +1,14 @@
+{
+  "name": "simple-chat",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "luv": "../../typescript"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "scripts": {
+    "dev": "bun --watch chat.ts"
+  }
+}
