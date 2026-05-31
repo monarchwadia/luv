@@ -1,5 +1,5 @@
 {
-  "name": "luv",
+  "name": "luv-ai",
   "version": "0.1.0",
   "description": "Canonical conversation type and provider morphisms for portable LLM apps. Forks, tool calls, streaming, and errors are first-class. Zero runtime dependencies.",
   "type": "module",
