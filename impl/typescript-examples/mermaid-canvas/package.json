@@ -1,0 +1,15 @@
+{
+  "name": "mermaid-canvas",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "luv": "../../typescript"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "scripts": {
+    "dev": "bun --watch server.ts",
+    "start": "bun server.ts"
+  }
+}

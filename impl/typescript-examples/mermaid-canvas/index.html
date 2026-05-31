@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mermaid-canvas — speak a diagram into being</title>
+    <style>
+      :root {
+        --bg: #0e1116;
+        --panel: #161b22;
+        --border: #2a313c;
+        --text: #e6edf3;
+        --muted: #8b949e;
+        --accent: #2f81f7;
+        --rec: #f85149;
+      }
+      * { box-sizing: border-box; }
+      html, body { height: 100%; margin: 0; }
+      body {
+        display: flex;
+        flex-direction: column;
+        background: var(--bg);
+        color: var(--text);
+        font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      }
+
+      header {
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+        background: var(--panel);
+      }
+      header h1 { font-size: 14px; font-weight: 600; margin: 0; letter-spacing: 0.2px; }
+      header .spacer { flex: 1; }
+      header .status { color: var(--muted); font-size: 12px; }
+
+      #record {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: #21262d;
+        color: var(--text);
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #record:hover { border-color: var(--accent); }
+      #record .dot {
+        width: 10px; height: 10px; border-radius: 50%;
+        background: var(--muted);
+      }
+      #record.live { border-color: var(--rec); }
+      #record.live .dot { background: var(--rec); animation: pulse 1.2s infinite; }
+      @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
+
+      #viewer {
+        flex: 1 1 70%;
+        min-height: 0;
+        position: relative;
+        overflow: auto;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+      }
+      #viewer svg { max-width: 100%; height: auto; }
+      #viewer .hint {
+        color: var(--muted);
+        text-align: center;
+        max-width: 460px;
+      }
+      #parsewarn {
+        position: absolute;
+        top: 12px; right: 12px;
+        font-size: 12px;
+        color: #f0b429;
+        background: rgba(0,0,0,0.4);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 4px 8px;
+        display: none;
+      }
+
+      #transcript {
+        flex: 0 0 30%;
+        min-height: 120px;
+        border-top: 1px solid var(--border);
+        background: var(--panel);
+        overflow-y: auto;
+        padding: 14px 18px;
+        font-size: 15px;
+      }
+      #transcript .label {
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        font-size: 10px;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+      #transcript .interim { color: var(--muted); }
+      #transcript .final { color: var(--text); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>mermaid-canvas</h1>
+      <button id="record"><span class="dot"></span><span id="recordLabel">Record</span></button>
+      <span class="spacer"></span>
+      <span class="status" id="status">idle</span>
+    </header>
+
+    <main id="viewer">
+      <div id="parsewarn">diagram syntax not ready — keeping last good render</div>
+      <div class="hint" id="hint">
+        Click <strong>Record</strong> and start talking. As you speak, the
+        conversation is transcribed below and turned into a live Mermaid
+        diagram up here — rendered through <strong>luv</strong>.
+      </div>
+      <div id="diagram"></div>
+    </main>
+
+    <section id="transcript">
+      <div class="label">Transcript</div>
+      <span id="finalText" class="final"></span>
+      <span id="interimText" class="interim"></span>
+    </section>
+
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "loose" });
+
+      const els = {
+        record: document.getElementById("record"),
+        recordLabel: document.getElementById("recordLabel"),
+        status: document.getElementById("status"),
+        diagram: document.getElementById("diagram"),
+        hint: document.getElementById("hint"),
+        parsewarn: document.getElementById("parsewarn"),
+        finalText: document.getElementById("finalText"),
+        interimText: document.getElementById("interimText"),
+      };
+
+      let recording = false;
+      let finalTranscript = "";
+      let lastMermaid = "";      // last source we sent to mermaid (good or not)
+      let lastGoodMermaid = "";  // last source that actually rendered
+      let renderSeq = 0;
+
+      // ---------- diagram rendering ----------
+
+      async function renderMermaid(code) {
+        if (!code || code === lastMermaid) return;
+        lastMermaid = code;
+        const id = "m" + ++renderSeq;
+        try {
+          const { svg } = await mermaid.render(id, code);
+          els.diagram.innerHTML = svg;
+          els.hint.style.display = "none";
+          els.parsewarn.style.display = "none";
+          lastGoodMermaid = code;
+        } catch (err) {
+          // Partial / invalid syntax mid-sentence — keep the last good picture.
+          els.parsewarn.style.display = "block";
+          console.warn("mermaid parse failed:", err?.message ?? err);
+        }
+      }
+
+      // ---------- talk to the luv server ----------
+
+      let inFlight = false;
+      let needsAnother = false;
+      let debounceTimer = null;
+
+      function scheduleUpdate() {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(requestDiagram, 1000);
+      }
+
+      async function requestDiagram() {
+        if (!finalTranscript.trim()) return;
+        if (inFlight) { needsAnother = true; return; }
+        inFlight = true;
+        els.status.textContent = "drawing…";
+        try {
+          const res = await fetch("/diagram", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ transcript: finalTranscript, previous: lastGoodMermaid }),
+          });
+          const data = await res.json();
+          if (data.error) {
+            els.status.textContent = "error: " + data.error;
+          } else {
+            await renderMermaid(data.mermaid);
+            els.status.textContent = recording ? "listening…" : "idle";
+          }
+        } catch (err) {
+          els.status.textContent = "network error";
+          console.error(err);
+        } finally {
+          inFlight = false;
+          if (needsAnother) { needsAnother = false; requestDiagram(); }
+        }
+      }
+
+      // ---------- speech recognition ----------
+
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      let recognition = null;
+
+      function buildRecognition() {
+        const rec = new SR();
+        rec.continuous = true;
+        rec.interimResults = true;
+        rec.lang = "en-US";
+
+        rec.onresult = (event) => {
+          let interim = "";
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const r = event.results[i];
+            if (r.isFinal) {
+              finalTranscript += r[0].transcript + " ";
+              scheduleUpdate();
+            } else {
+              interim += r[0].transcript;
+            }
+          }
+          els.finalText.textContent = finalTranscript;
+          els.interimText.textContent = interim;
+          els.transcript.scrollTop = els.transcript.scrollHeight;
+        };
+
+        rec.onerror = (e) => {
+          if (e.error === "no-speech" || e.error === "aborted") return;
+          els.status.textContent = "speech error: " + e.error;
+        };
+
+        // Chrome stops recognition on silence; restart while recording.
+        rec.onend = () => {
+          if (recording) {
+            try { rec.start(); } catch { /* already starting */ }
+          }
+        };
+        return rec;
+      }
+
+      function startRecording() {
+        if (!SR) {
+          els.status.textContent = "Web Speech API unavailable — use Chrome";
+          alert("This browser has no Web Speech API. Open in Chrome.");
+          return;
+        }
+        recognition = buildRecognition();
+        recording = true;
+        els.record.classList.add("live");
+        els.recordLabel.textContent = "Stop";
+        els.status.textContent = "listening…";
+        try { recognition.start(); } catch { /* ignore double-start */ }
+      }
+
+      function stopRecording() {
+        recording = false;
+        els.record.classList.remove("live");
+        els.recordLabel.textContent = "Record";
+        els.status.textContent = "idle";
+        if (recognition) recognition.stop();
+        // Flush a final render of whatever we heard.
+        clearTimeout(debounceTimer);
+        requestDiagram();
+      }
+
+      // expose transcript element for scroll
+      els.transcript = document.getElementById("transcript");
+
+      els.record.addEventListener("click", () => {
+        recording ? stopRecording() : startRecording();
+      });
+    </script>
+  </body>
+</html>
