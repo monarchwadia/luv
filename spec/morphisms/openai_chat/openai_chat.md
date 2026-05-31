@@ -64,11 +64,15 @@ the `luv_conversation_to_openai_request` arrow):
 | `model` | string | yes | per-call parameter, not from canonical Conversation |
 | `messages` | array of `OpenAI.Message` | yes | derived from luv `Conversation` |
 | `stream` | boolean | no | per-call parameter (false for the value-level arrow) |
+| `stream_options` | object | no | emitted as `{include_usage: true}` whenever `stream` is `true`, so the streamed response carries a trailing usage chunk |
 | `tools` | array | no | per-call parameter; tool definitions are not canonical luv state |
 
 The `model`, `stream`, and `tools` fields are supplied by the caller of
 the morphism, not by the canonical `Conversation`. The arrow defines
-the `messages` field; the other fields are passed through.
+the `messages` field; the other fields are passed through. When `stream`
+is `true`, the arrow also emits `stream_options: {include_usage: true}`
+so the streamed response includes a trailing usage chunk (consumed into
+`message_end.usage`).
 
 ### OpenAI.Message
 
@@ -103,8 +107,22 @@ OpenAI.Response := {
   created: number,
   model: string,
   choices: [OpenAI.Choice, ...],
-  usage: { prompt_tokens, completion_tokens, total_tokens },
+  usage: OpenAI.Usage,
+  service_tier: string?,
   system_fingerprint: string?
+}
+
+OpenAI.Usage := {
+  prompt_tokens: number,
+  completion_tokens: number,
+  total_tokens: number,
+  prompt_tokens_details: { cached_tokens: number, audio_tokens: number } | null,
+  completion_tokens_details: {
+    reasoning_tokens: number,
+    audio_tokens: number,
+    accepted_prediction_tokens: number,
+    rejected_prediction_tokens: number
+  } | null
 }
 
 OpenAI.Choice := {
@@ -185,10 +203,12 @@ Reads `choices[0]` and produces a luv `Reply`.
 | `choices[0].message.content == null` | no text block |
 | `choices[0].message.tool_calls[i]` | one `tool_call` block per entry, with `id`, `name = function.name`, `args = function.arguments` |
 | `choices[0].finish_reason` | luv `Reply.finish_reason` (see enum mapping) |
+| `model` + `usage` | luv `Reply.usage` = `{provider: "openai_chat", model: <response.model>, raw: <usage>}`, where `raw` is the **entire** `usage` object passed through verbatim — every field, in the provider's key order. `OpenAI.Usage` above documents the common shape, but any additional fields the provider sends are preserved too; nothing is dropped. If `usage` is absent, `Reply.usage` is `null`. |
 
 The resulting Reply has `message.role: "assistant"`. `message.content`
 is the ordered list of blocks: text first (if any), then tool_call
-blocks in order.
+blocks in order. `Reply.usage` carries the provider's token accounting
+faithfully rather than a normalized count (see SPEC.md §2.5).
 
 ### Arrow: `openai_stream_to_luv_stream`
 
@@ -205,7 +225,14 @@ the currently-open block:
 | `delta.content` while a text block is open | `text_delta` with the content |
 | `delta.tool_calls[i]` first appearance of index `i` | if a text block is open: `block_end`. Then `block_start` with `block: {kind: "tool_call", id: <id>, name: <function.name>, args: ""}`, then `args_delta` with `<function.arguments>` (if non-empty) |
 | `delta.tool_calls[i]` subsequent appearance | `args_delta` with `<function.arguments>` (incremental JSON fragment) |
-| Final chunk (`finish_reason` is non-null, `delta` is empty) | if any block is open: `block_end`. Then `message_end` with `finish_reason` per the enum mapping |
+| Final chunk (`finish_reason` is non-null, `delta` is empty) | if any block is open: `block_end`. Then `message_end` with `finish_reason` per the enum mapping, and `usage` set from the trailing usage chunk if present (see below) |
+
+When the request is sent with `stream_options: {include_usage: true}`,
+OpenAI emits a final chunk carrying `usage` (with `choices: []`). The
+morphism reads it and sets `message_end.usage` to `{provider:
+"openai_chat", model: <chunk.model>, raw: <usage>}`. If no usage chunk
+is present (e.g., `include_usage` was not requested), `message_end.usage`
+is `null`.
 
 ## Enum mappings
 
@@ -274,7 +301,8 @@ this list is exhaustive.
 |---|---|
 | `choices[i]` for `i > 0` (n > 1) | Out of scope. The morphism reads only `choices[0]`; additional choices are dropped. |
 | `refusal` field on assistant message | Currently surfaced as plain `text` content of the message (lossy: the "refusal" semantic is flattened to text). |
-| `usage`, `system_fingerprint`, `created`, `model`, `id` | Not represented in luv `Reply`. |
+| `usage` and `model` | Represented in luv `Reply.usage` as `{provider, model, raw}`; `raw` preserves the `OpenAI.Usage` object faithfully (token counts are not normalized — see SPEC.md §2.5). |
+| `system_fingerprint`, `service_tier`, `created`, `id` | Not represented in luv `Reply`. |
 | `logprobs` | Not represented. |
 | `finish_reason: "tool_calls"` vs `"stop"` | Both map to `end_turn` in luv v1 (luv has no dedicated `tool_use` finish reason). |
 | `developer` role in messages (o1+ models) | Not represented; would arrive only in request-side context, which luv does not currently emit. |
@@ -284,7 +312,7 @@ this list is exhaustive.
 | Exception | Effect |
 |---|---|
 | Same as `openai_response_to_luv_reply` for finish_reason and per-choice projection | — |
-| `usage` chunks (when `stream_options.include_usage: true`) | Not represented in the luv stream. |
+| `usage` chunks (when `stream_options.include_usage: true`) | Represented: the trailing usage chunk sets `message_end.usage` (`{provider, model, raw}`). When `include_usage` is not requested, no usage chunk arrives and `message_end.usage` is `null`. |
 | Empty `delta.content` strings | May still emit a zero-byte `text_delta`; downstream consumers should treat these as no-ops. |
 
 ## `laws_satisfied`

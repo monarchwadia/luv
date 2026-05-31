@@ -77,9 +77,24 @@ export class LuvError extends Error {
   }
 }
 
+/**
+ * Provider-tagged usage envelope. Token accounting is NOT normalized across
+ * providers (token counts are not commensurable and billing differs); instead
+ * the provider's own usage object is preserved verbatim in `raw`, tagged with
+ * the morphism `provider` id and the `model` that produced the reply. The
+ * shape of `raw` is defined by each morphism spec and is opaque to the
+ * universal core.
+ */
+export interface Usage {
+  provider: string;
+  model: string;
+  raw: unknown;
+}
+
 export interface Reply {
   message: Message;
   finish_reason: FinishReason;
+  usage: Usage | null;
 }
 
 export type StreamEventReply =
@@ -88,7 +103,7 @@ export type StreamEventReply =
   | { kind: "text_delta"; text: string }
   | { kind: "args_delta"; args: string }
   | { kind: "block_end" }
-  | { kind: "message_end"; finish_reason: FinishReason };
+  | { kind: "message_end"; finish_reason: FinishReason; usage: Usage | null };
 
 export type StreamReply = StreamEventReply[];
 

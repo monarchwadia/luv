@@ -2,6 +2,7 @@ import type {
   Conversation,
   ErrorCategory,
   Reply,
+  Usage,
   StreamEventReply,
   StreamReply,
 } from "../types.js";
@@ -11,6 +12,7 @@ import {
   luv_conversation_to_openai_request,
   openai_response_to_luv_reply,
   openai_stream_to_luv_stream,
+  openaiUsageEnvelope,
   type OpenAIRequestOptions,
 } from "../morphisms/openai_chat.js";
 
@@ -156,6 +158,7 @@ function makeErrorReply(
       ],
     },
     finish_reason: "error",
+    usage: null,
   };
 }
 
@@ -178,7 +181,7 @@ export function openai_http_stream_to_luv_stream(
         },
       },
       { kind: "block_end" },
-      { kind: "message_end", finish_reason: "error" },
+      { kind: "message_end", finish_reason: "error", usage: null },
     ];
   }
 
@@ -324,7 +327,8 @@ async function* streamSSE(
   // chunk-at-a-time so we can yield events as bytes arrive.
   const state = createStreamState();
 
-  while (true) {
+  let doneSignal = false;
+  while (!doneSignal) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -336,7 +340,10 @@ async function* streamSSE(
       for (const line of event.split("\n")) {
         if (!line.startsWith("data: ")) continue;
         const payload = line.slice(6);
-        if (payload === "[DONE]") return;
+        if (payload === "[DONE]") {
+          doneSignal = true;
+          break;
+        }
         let chunk: unknown;
         try {
           chunk = JSON.parse(payload);
@@ -345,17 +352,31 @@ async function* streamSSE(
         }
         for (const ev of processChunk(state, chunk)) yield ev;
       }
+      if (doneSignal) break;
     }
   }
+
+  // Emit the deferred message_end (with usage if a trailing usage chunk
+  // arrived before [DONE]).
+  for (const ev of finishStream(state)) yield ev;
 }
 
 interface StreamState {
   blockOpen: "text" | "tool_call" | null;
   messageStartEmitted: boolean;
+  model: string | null;
+  usage: Usage | null;
+  finishReason: string | null;
 }
 
 function createStreamState(): StreamState {
-  return { blockOpen: null, messageStartEmitted: false };
+  return {
+    blockOpen: null,
+    messageStartEmitted: false,
+    model: null,
+    usage: null,
+    finishReason: null,
+  };
 }
 
 function processChunk(
@@ -364,6 +385,8 @@ function processChunk(
 ): StreamEventReply[] {
   const out: StreamEventReply[] = [];
   const c = chunk as {
+    model?: string;
+    usage?: unknown;
     choices: Array<{
       delta: {
         role?: string;
@@ -378,7 +401,13 @@ function processChunk(
       finish_reason: string | null;
     }>;
   };
+  if (typeof c.model === "string") state.model = c.model;
+  // Trailing usage chunk (stream_options.include_usage): empty choices + usage.
+  if (c.usage !== undefined && c.usage !== null) {
+    state.usage = openaiUsageEnvelope(c.model ?? state.model, c.usage);
+  }
   const choice = c.choices[0];
+  if (choice === undefined) return out;
   const delta = choice.delta;
   const finishReason = choice.finish_reason;
 
@@ -433,12 +462,29 @@ function processChunk(
       out.push({ kind: "block_end" });
       state.blockOpen = null;
     }
-    out.push({
-      kind: "message_end",
-      finish_reason: mapFinishReason(finishReason),
-    });
+    // Defer message_end to finishStream: OpenAI sends usage in a trailing
+    // chunk AFTER this finish chunk, so message_end is emitted at stream end.
+    state.finishReason = finishReason;
   }
 
+  return out;
+}
+
+// Emit the deferred message_end once the SSE stream ends, carrying usage if a
+// trailing usage chunk was seen.
+function finishStream(state: StreamState): StreamEventReply[] {
+  const out: StreamEventReply[] = [];
+  if (!state.messageStartEmitted) return out;
+  if (state.blockOpen !== null) {
+    out.push({ kind: "block_end" });
+    state.blockOpen = null;
+  }
+  out.push({
+    kind: "message_end",
+    finish_reason:
+      state.finishReason !== null ? mapFinishReason(state.finishReason) : "end_turn",
+    usage: state.usage,
+  });
   return out;
 }
 

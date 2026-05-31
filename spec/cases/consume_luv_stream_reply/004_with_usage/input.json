@@ -1,0 +1,1 @@
+[{"kind":"message_start"},{"kind":"block_start","block":{"kind":"text","text":""}},{"kind":"text_delta","text":"Hi"},{"kind":"block_end"},{"kind":"message_end","finish_reason":"end_turn","usage":{"provider":"openai_chat","model":"gpt-4o-mini","raw":{"prompt_tokens":17,"completion_tokens":6,"total_tokens":23}}}]

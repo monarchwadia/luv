@@ -3,6 +3,7 @@ import type {
   Conversation,
   FinishReason,
   Reply,
+  Usage,
   StreamReply,
   StreamEventReply,
 } from "../types.js";
@@ -97,6 +98,7 @@ export function luv_conversation_to_openai_request(
     messages,
   };
   if (opts.stream !== undefined) req.stream = opts.stream;
+  if (opts.stream === true) req.stream_options = { include_usage: true };
   if (opts.tools !== undefined) req.tools = opts.tools;
   return req;
 }
@@ -108,9 +110,27 @@ function concatTextBlocks(content: Block[]): string {
     .join("");
 }
 
+// Build the luv usage envelope from an OpenAI usage object + model.
+// Token counts are preserved faithfully (not normalized); see SPEC §2.5.
+export function openaiUsageEnvelope(model: unknown, usage: unknown): Usage | null {
+  if (usage === null || typeof usage !== "object") return null;
+  // Pass the provider's usage object through verbatim — every field, in the
+  // provider's key order. Nothing is dropped or normalized (SPEC §2.5);
+  // `raw` is opaque to the core.
+  return {
+    provider: "openai_chat",
+    model: typeof model === "string" ? model : "",
+    raw: usage,
+  };
+}
+
 // openai_response_to_luv_reply
 export function openai_response_to_luv_reply(resp: unknown): Reply {
-  const r = resp as { choices: Array<{ message: any; finish_reason: string }> };
+  const r = resp as {
+    model?: string;
+    usage?: unknown;
+    choices: Array<{ message: any; finish_reason: string }>;
+  };
   const choice = r.choices[0];
   const msg = choice.message;
   const blocks: Block[] = [];
@@ -132,6 +152,7 @@ export function openai_response_to_luv_reply(resp: unknown): Reply {
   return {
     message: { role: "assistant", content: blocks },
     finish_reason: mapFinishReason(choice.finish_reason),
+    usage: openaiUsageEnvelope(r.model, r.usage),
   };
 }
 
@@ -159,9 +180,13 @@ export function openai_stream_to_luv_stream(chunks: unknown[]): StreamReply {
   const events: StreamEventReply[] = [];
   let blockOpen: "text" | "tool_call" | null = null;
   let messageStartEmitted = false;
+  let model: string | null = null;
+  let usageEnvelope: Usage | null = null;
 
   for (const chunk of chunks) {
     const c = chunk as {
+      model?: string;
+      usage?: unknown;
       choices: Array<{
         delta: {
           role?: string;
@@ -176,7 +201,14 @@ export function openai_stream_to_luv_stream(chunks: unknown[]): StreamReply {
         finish_reason: string | null;
       }>;
     };
+    if (typeof c.model === "string") model = c.model;
+    // Trailing usage chunk (stream_options.include_usage) carries usage and
+    // an empty choices array.
+    if (c.usage !== undefined && c.usage !== null) {
+      usageEnvelope = openaiUsageEnvelope(c.model ?? model, c.usage);
+    }
     const choice = c.choices[0];
+    if (choice === undefined) continue;
     const delta = choice.delta;
     const finishReason = choice.finish_reason;
 
@@ -243,7 +275,17 @@ export function openai_stream_to_luv_stream(chunks: unknown[]): StreamReply {
       events.push({
         kind: "message_end",
         finish_reason: mapFinishReason(finishReason),
+        usage: null,
       });
+    }
+  }
+
+  // OpenAI sends usage in a trailing chunk (after the finish chunk) when
+  // stream_options.include_usage is set; attach it to message_end.
+  if (usageEnvelope !== null) {
+    const last = events[events.length - 1];
+    if (last && last.kind === "message_end") {
+      last.usage = usageEnvelope;
     }
   }
 

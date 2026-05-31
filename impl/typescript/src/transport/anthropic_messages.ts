@@ -2,6 +2,7 @@ import type {
   Conversation,
   ErrorCategory,
   Reply,
+  Usage,
   StreamEventReply,
   StreamReply,
 } from "../types.js";
@@ -11,6 +12,7 @@ import {
   luv_conversation_to_anthropic_request,
   anthropic_response_to_luv_reply,
   anthropic_stream_to_luv_stream,
+  anthropicUsageEnvelope,
   type AnthropicRequestOptions,
 } from "../morphisms/anthropic_messages.js";
 
@@ -144,6 +146,7 @@ function makeErrorReply(
       ],
     },
     finish_reason: "error",
+    usage: null,
   };
 }
 
@@ -166,7 +169,7 @@ export function anthropic_http_stream_to_luv_stream(
         },
       },
       { kind: "block_end" },
-      { kind: "message_end", finish_reason: "error" },
+      { kind: "message_end", finish_reason: "error", usage: null },
     ];
   }
 
@@ -354,10 +357,12 @@ async function* streamSSE(
 
 interface StreamState {
   storedStopReason: string | null;
+  model: string | null;
+  usageObj: Record<string, unknown> | null;
 }
 
 function createStreamState(): StreamState {
-  return { storedStopReason: null };
+  return { storedStopReason: null, model: null, usageObj: null };
 }
 
 function processEvent(
@@ -367,6 +372,8 @@ function processEvent(
   const out: StreamEventReply[] = [];
   const e = evt as {
     type: string;
+    message?: { model?: string; usage?: Record<string, unknown> };
+    usage?: Record<string, unknown>;
     content_block?: { type: string; id?: string; name?: string };
     delta?: {
       type?: string;
@@ -378,6 +385,10 @@ function processEvent(
   switch (e.type) {
     case "message_start":
       out.push({ kind: "message_start" });
+      if (e.message) {
+        if (typeof e.message.model === "string") state.model = e.message.model;
+        if (e.message.usage) state.usageObj = { ...e.message.usage };
+      }
       break;
     case "content_block_start": {
       const cb = e.content_block;
@@ -420,11 +431,15 @@ function processEvent(
       if (e.delta && typeof e.delta.stop_reason === "string") {
         state.storedStopReason = e.delta.stop_reason;
       }
+      if (e.usage) {
+        state.usageObj = { ...(state.usageObj ?? {}), ...e.usage };
+      }
       break;
     case "message_stop":
       out.push({
         kind: "message_end",
         finish_reason: mapStopReason(state.storedStopReason),
+        usage: anthropicUsageEnvelope(state.model, state.usageObj),
       });
       break;
     default:

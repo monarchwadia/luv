@@ -2,6 +2,7 @@ import type {
   Block,
   FinishReason,
   Reply,
+  Usage,
   StreamEventReply,
   StreamReply,
 } from "./types.js";
@@ -10,6 +11,7 @@ import type {
 // Collapses a well-formed Stream<Reply> into the Reply it represents.
 export function consume_luv_stream_reply(stream: StreamReply): Reply {
   let finishReason: FinishReason = "end_turn";
+  let usage: Usage | null = null;
   const blocks: Block[] = [];
   let current: Block | null = null;
 
@@ -52,6 +54,7 @@ export function consume_luv_stream_reply(stream: StreamReply): Reply {
         break;
       case "message_end":
         finishReason = evt.finish_reason;
+        usage = evt.usage ?? null;
         break;
     }
   }
@@ -59,6 +62,7 @@ export function consume_luv_stream_reply(stream: StreamReply): Reply {
   return {
     message: { role: "assistant", content: blocks },
     finish_reason: finishReason,
+    usage,
   };
 }
 
@@ -96,6 +100,10 @@ export function produce_luv_stream_reply(reply: Reply): StreamReply {
     // tool_result blocks don't appear in Stream<Reply> (assistant-only).
   }
 
-  events.push({ kind: "message_end", finish_reason: reply.finish_reason });
+  events.push({
+    kind: "message_end",
+    finish_reason: reply.finish_reason,
+    usage: reply.usage ?? null,
+  });
   return events;
 }

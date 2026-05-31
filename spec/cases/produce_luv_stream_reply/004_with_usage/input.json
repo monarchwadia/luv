@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","content":[{"kind":"text","text":"Hi"}]},"finish_reason":"end_turn","usage":{"provider":"openai_chat","model":"gpt-4o-mini","raw":{"prompt_tokens":17,"completion_tokens":6,"total_tokens":23}}}

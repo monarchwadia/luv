@@ -490,6 +490,27 @@ function validateReplyInto(
         "FinishReason must be 'end_turn', 'max_tokens', 'content_filter', or 'error'",
     });
   }
+
+  // shape.reply.usage: when present and non-null, usage is {provider, model,
+  // raw} with provider and model strings (raw is morphism-defined, unchecked).
+  if (r.usage !== null && r.usage !== undefined) {
+    if (typeof r.usage !== "object" || Array.isArray(r.usage)) {
+      errors.push({
+        path: `${basePath}/usage`,
+        rule: "shape.reply.usage",
+        message: "Reply.usage must be a Usage object or null",
+      });
+    } else {
+      const u = r.usage as Record<string, unknown>;
+      if (typeof u.provider !== "string" || typeof u.model !== "string") {
+        errors.push({
+          path: `${basePath}/usage`,
+          rule: "shape.reply.usage",
+          message: "Reply.usage requires string 'provider' and 'model'",
+        });
+      }
+    }
+  }
 }
 
 function validateStreamReplyInto(

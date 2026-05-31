@@ -3,6 +3,7 @@ import type {
   Conversation,
   FinishReason,
   Reply,
+  Usage,
   StreamEventReply,
   StreamReply,
 } from "../types.js";
@@ -122,9 +123,26 @@ function blockToAnthropic(b: Block): unknown | null {
   return null;
 }
 
+// Build the luv usage envelope from an Anthropic usage object + model.
+// Token counts are preserved faithfully (not normalized); see SPEC §2.5.
+export function anthropicUsageEnvelope(model: unknown, usage: unknown): Usage | null {
+  if (usage === null || typeof usage !== "object") return null;
+  // Pass the provider's usage object through verbatim — every field, in the
+  // provider's key order. Nothing is dropped or normalized (SPEC §2.5). For
+  // streams this is the merged message_start + message_delta usage. `raw` is
+  // opaque to the core.
+  return {
+    provider: "anthropic_messages",
+    model: typeof model === "string" ? model : "",
+    raw: usage,
+  };
+}
+
 // anthropic_response_to_luv_reply
 export function anthropic_response_to_luv_reply(resp: unknown): Reply {
   const r = resp as {
+    model?: string;
+    usage?: unknown;
     content: Array<
       | { type: "text"; text: string }
       | { type: "tool_use"; id: string; name: string; input: unknown }
@@ -147,6 +165,7 @@ export function anthropic_response_to_luv_reply(resp: unknown): Reply {
   return {
     message: { role: "assistant", content: blocks },
     finish_reason: mapStopReason(r.stop_reason),
+    usage: anthropicUsageEnvelope(r.model, r.usage),
   };
 }
 
@@ -171,10 +190,14 @@ export function anthropic_stream_to_luv_stream(
 ): StreamReply {
   const out: StreamEventReply[] = [];
   let storedStopReason: string | null = null;
+  let model: string | null = null;
+  let usageObj: Record<string, unknown> | null = null;
 
   for (const evt of events) {
     const e = evt as {
       type: string;
+      message?: { model?: string; usage?: Record<string, unknown> };
+      usage?: Record<string, unknown>;
       content_block?: { type: string; id?: string; name?: string };
       delta?: {
         type?: string;
@@ -186,6 +209,10 @@ export function anthropic_stream_to_luv_stream(
     switch (e.type) {
       case "message_start":
         out.push({ kind: "message_start" });
+        if (e.message) {
+          if (typeof e.message.model === "string") model = e.message.model;
+          if (e.message.usage) usageObj = { ...e.message.usage };
+        }
         break;
       case "content_block_start": {
         const cb = e.content_block;
@@ -228,11 +255,17 @@ export function anthropic_stream_to_luv_stream(
         if (e.delta && typeof e.delta.stop_reason === "string") {
           storedStopReason = e.delta.stop_reason;
         }
+        // Anthropic reports final output_tokens (and running fields) here;
+        // merge over the message_start usage.
+        if (e.usage) {
+          usageObj = { ...(usageObj ?? {}), ...e.usage };
+        }
         break;
       case "message_stop":
         out.push({
           kind: "message_end",
           finish_reason: mapStopReason(storedStopReason),
+          usage: anthropicUsageEnvelope(model, usageObj),
         });
         break;
       case "ping":

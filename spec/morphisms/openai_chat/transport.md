@@ -183,6 +183,13 @@ For a `2xx` response:
    chunks array.
 4. Return the resulting `Stream<Reply>`.
 
+Streaming requests set `stream_options: {include_usage: true}` (see the
+morphism's `OpenAI.Request`), so OpenAI appends a trailing usage chunk
+and the resulting `message_end` carries that usage (`null` if the
+provider sent none). A real-time client consuming the SSE incrementally
+emits `message_end` only after that trailing chunk arrives, so usage is
+not lost.
+
 For a non-`2xx` response, emit a single-element stream describing the
 failure:
 

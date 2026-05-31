@@ -4,6 +4,7 @@ import type {
   Node,
   Conversation,
   Reply,
+  Usage,
   StreamEventReply,
   StreamReply,
   ValidationError,
@@ -48,8 +49,19 @@ export function encodeConversation(c: Conversation): unknown {
   };
 }
 
+export function encodeUsage(u: Usage | null): unknown {
+  if (u === null) return null;
+  // Envelope key order: provider, model, raw. `raw` is morphism-defined and
+  // already in canonical key order by construction; passed through unchanged.
+  return { provider: u.provider, model: u.model, raw: u.raw };
+}
+
 export function encodeReply(r: Reply): unknown {
-  return { message: encodeMessage(r.message), finish_reason: r.finish_reason };
+  return {
+    message: encodeMessage(r.message),
+    finish_reason: r.finish_reason,
+    usage: encodeUsage(r.usage),
+  };
 }
 
 export function encodeStreamEventReply(e: StreamEventReply): unknown {
@@ -65,7 +77,11 @@ export function encodeStreamEventReply(e: StreamEventReply): unknown {
     case "block_end":
       return { kind: e.kind };
     case "message_end":
-      return { kind: e.kind, finish_reason: e.finish_reason };
+      return {
+        kind: e.kind,
+        finish_reason: e.finish_reason,
+        usage: encodeUsage(e.usage),
+      };
   }
 }
 

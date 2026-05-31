@@ -332,3 +332,50 @@ which is deterministic and inspectable.
 (This is a project-level rule, not a spec rule; reference
 implementations in other languages may relax it where their ecosystem
 norms differ.)
+
+---
+
+## Usage: provider-tagged envelope vs. normalized metric
+
+**Considered:**
+
+- Omit token usage entirely (the original v1 state).
+- Normalize to a small common metric, e.g. `{input_tokens,
+  output_tokens}` mapped from each provider.
+- Provider-tagged envelope `{provider, model, raw}` where `raw` is the
+  provider's own usage object, typed per morphism (chosen).
+
+**Chosen:** Provider-tagged envelope, present on every `Reply` but
+nullable.
+
+**Why:** Token counts are *not commensurable* across providers —
+different tokenizers and vocabularies mean "1,000 input_tokens" is a
+different quantity and a different cost on OpenAI vs. Anthropic vs.
+Gemini. A normalized metric looks comparable but isn't, which is worse
+than no normalization: it invites incorrect cross-provider arithmetic.
+Worse for the actual goal (cost tracking), a 2-field metric *discards
+the fields cost depends on* — cached reads (cheap), Anthropic
+`cache_creation` (a ~1.25× premium, not a discount), reasoning/thinking
+tokens (billed but invisible), and service tier. Surveying the three
+providers confirmed there is no universal "total" either (Anthropic
+reports none; Gemini's total includes thinking tokens), and that cache
+inclusion semantics differ (OpenAI/Gemini fold cached tokens into the
+prompt count; Anthropic reports them separately).
+
+So the canonical boundary is drawn deliberately: luv canonicalizes the
+provider-independent *conversation* and preserves-with-provenance the
+provider-dependent *usage*. `provider` + `model` make `raw`
+interpretable for pricing; `raw` is lossless and typed by each morphism
+(`OpenAI.Usage`, `Anthropic.Usage`), with internal key order owned by
+the morphism. The universal core treats `raw` as opaque and carries the
+envelope through `consume`/`produce` unchanged (so L4 still holds).
+
+**Rejected specifics:**
+
+- *Normalized `{input_tokens, output_tokens}`* — misleading
+  comparability; drops cost-relevant detail.
+- *A `total_tokens` field* — no consistent cross-provider definition;
+  derivable where meaningful.
+- *Omit-when-null encoding* — `usage` is present-but-nullable so the
+  canonical key order stays fixed and the field is explicit, consistent
+  with the rest of the canonical JSON form.

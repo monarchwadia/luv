@@ -115,7 +115,17 @@ Anthropic.Response := {
   model: string,
   stop_reason: "end_turn" | "max_tokens" | "stop_sequence" | "tool_use" | null,
   stop_sequence: string | null,
-  usage: { input_tokens: number, output_tokens: number }
+  usage: Anthropic.Usage
+}
+
+Anthropic.Usage := {
+  input_tokens: number,
+  cache_creation_input_tokens: number,
+  cache_read_input_tokens: number,
+  cache_creation: { ephemeral_5m_input_tokens: number, ephemeral_1h_input_tokens: number } | null,
+  output_tokens: number,
+  service_tier: string | null,
+  inference_geo: string | null
 }
 ```
 
@@ -215,28 +225,35 @@ Reads `content` and `stop_reason` from the response.
 | Each `content[i]` with `type: "text"` | One luv `text` block with the same text |
 | Each `content[i]` with `type: "tool_use"` | One luv `tool_call` block with `id`, `name`, and `args` set to canonical-JSON stringification of `input` |
 | `stop_reason` | luv `Reply.finish_reason` (see enum mapping) |
+| `model` + `usage` | luv `Reply.usage` = `{provider: "anthropic_messages", model: <response.model>, raw: <usage>}`, where `raw` is the **entire** `usage` object passed through verbatim — every field, in the provider's key order. `Anthropic.Usage` above documents the common shape, but any additional fields (e.g. `output_tokens_details`, `server_tool_use`) are preserved too; nothing is dropped. For streams, `raw` is the lossless merge of the `message_start` and `message_delta` usage. If `usage` is absent, `Reply.usage` is `null`. |
 
 The resulting Reply has `message.role: "assistant"` and content blocks
-in the same order as the Anthropic response.
+in the same order as the Anthropic response. `Reply.usage` carries the
+provider's token accounting faithfully rather than a normalized count
+(see SPEC.md §2.5).
 
 ### Arrow: `anthropic_stream_to_luv_stream`
 
 Walks Anthropic stream events in order, emitting luv StreamEvents.
-State: tracks the open block kind to associate deltas correctly. The
-stop_reason arrives in a `message_delta` event before `message_stop`;
-the morphism stores it and emits `message_end` with the mapped
-FinishReason when `message_stop` arrives.
+State: tracks the open block kind to associate deltas correctly, and
+accumulates the usage envelope across events — `message.model` and the
+input-side `message.usage` from `message_start`, then the final
+`output_tokens` from `message_delta`'s `usage`. The stop_reason arrives
+in a `message_delta` event before `message_stop`; the morphism stores
+it and, when `message_stop` arrives, emits `message_end` with the mapped
+FinishReason and the merged `usage` envelope (`null` if no usage was
+seen).
 
 | Anthropic event | luv event(s) emitted |
 |---|---|
-| `message_start` | one `message_start` |
+| `message_start` | one `message_start`; stores `message.model` and the initial `message.usage` for the final envelope |
 | `content_block_start` with `text` content_block | one `block_start` with `{kind: "text", text: ""}` |
 | `content_block_start` with `tool_use` content_block | one `block_start` with `{kind: "tool_call", id, name, args: ""}` |
 | `content_block_delta` with `text_delta` | one `text_delta` with the delta text |
 | `content_block_delta` with `input_json_delta` | one `args_delta` with the partial_json |
 | `content_block_stop` | one `block_end` |
-| `message_delta` | none (stop_reason stored for `message_stop`) |
-| `message_stop` | one `message_end` with the mapped FinishReason from the stored stop_reason |
+| `message_delta` | none emitted; `stop_reason` is stored, and the event's `usage` (notably the final `output_tokens`) overrides the stored usage |
+| `message_stop` | one `message_end` with the mapped FinishReason and `usage` = `{provider: "anthropic_messages", model, raw}`, where `raw` is the `message_start` usage merged with the final `output_tokens` from `message_delta`. If no usage was seen, `usage` is `null`. |
 | `ping` | none |
 
 ## Enum mappings
@@ -292,7 +309,8 @@ Anthropic values may collapse to the same canonical output.
 
 | Exception | Effect |
 |---|---|
-| `id`, `model`, `usage`, `stop_sequence` fields | Not represented in luv `Reply`. |
+| `model` and `usage` | Represented in luv `Reply.usage` as `{provider, model, raw}`; `raw` preserves the `Anthropic.Usage` object faithfully (token counts are not normalized — see SPEC.md §2.5). |
+| `id`, `stop_sequence` fields | Not represented in luv `Reply`. |
 | `stop_reason: "stop_sequence"` | Maps to luv `end_turn`; the actual matched sequence is dropped. |
 | `stop_reason: "tool_use"` vs `"end_turn"` | Both map to luv `end_turn` (luv v1 has no `tool_use` finish reason); the distinction is lost. |
 | Tool use `input` key ordering | Re-stringified to canonical JSON using insertion order; bit-identical only for inputs the morphism has not seen its provider re-order. |
@@ -304,8 +322,7 @@ Anthropic values may collapse to the same canonical output.
 |---|---|
 | Same as `anthropic_response_to_luv_reply` for finish_reason and content shape | — |
 | `ping` events | Discarded silently. |
-| `usage` field in `message_delta` | Not represented in the luv stream. |
-| Incremental `usage` updates across deltas | Anthropic reports running usage in `message_delta` events; luv stream events do not carry usage. |
+| `usage` across `message_start` and `message_delta` | Represented: merged into `message_end.usage` (`{provider, model, raw}`), with the final `output_tokens` taken from `message_delta`. Intermediate running totals are not surfaced as separate events. |
 
 ## `laws_satisfied`
 

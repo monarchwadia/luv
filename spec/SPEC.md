@@ -453,23 +453,53 @@ Conversation.
 ```
 Reply := {
   message: Message,
-  finish_reason: FinishReason
+  finish_reason: FinishReason,
+  usage: Usage | null
+}
+
+Usage := {
+  provider: String,
+  model: String,
+  raw: <morphism-defined object>
 }
 ```
 
 Canonical JSON form:
 
 ```json
-{"message":{"role":"assistant","content":[<block>, ...]},"finish_reason":"<reason>"}
+{"message":{"role":"assistant","content":[<block>, ...]},"finish_reason":"<reason>","usage":<Usage>|null}
 ```
 
-Key order is fixed: `message` precedes `finish_reason`. The nested
-message's `role` must be `"assistant"`. Its content blocks are
+Key order is fixed: `message`, then `finish_reason`, then `usage`. The
+nested message's `role` must be `"assistant"`. Its content blocks are
 restricted to `text`, `tool_call`, and `error` (per the Block role
 conventions in Section 2.2; `tool_result` blocks never appear in a
 Reply because the assistant does not produce tool results, and an
 `error` block indicates a Reply that terminated abnormally — see
 Section 2.4 for the corresponding `error` finish_reason).
+
+**Usage.** Token accounting is deliberately *not* collapsed into a
+common metric. Token counts are not commensurable across providers
+(different tokenizers and vocabularies), and pricing varies by provider,
+model, and tier — so a single canonical token count would mislead more
+than it helps. Instead, `usage` is a provider-tagged envelope:
+
+- `provider` — the morphism id that produced the Reply (e.g.,
+  `"openai_chat"`, `"anthropic_messages"`).
+- `model` — the model id the provider reported; the key for pricing.
+- `raw` — the provider's own usage object, preserved faithfully and in
+  full: no field is dropped or normalized, and keys keep the provider's
+  order. Its shape is *documented* by the producing morphism (see each
+  morphism spec), but the morphism does not reconstruct or filter it —
+  the universal core treats `raw` as opaque and carries the envelope
+  through `consume` and `produce` unchanged.
+
+`usage` is present on every Reply but is `null` when no usage is
+available (e.g., a Reply that terminated with an `error`, or a stream
+the provider did not annotate with usage). This boundary is deliberate
+(see DECISIONS.md): luv canonicalizes the provider-independent
+*conversation*, and preserves-with-provenance the provider-dependent
+*usage*.
 
 ### 2.6 Stream and StreamEvent
 
@@ -493,7 +523,7 @@ StreamEvent<Reply> :=
   | { kind: "text_delta", text: Text }
   | { kind: "args_delta", args: Text }
   | { kind: "block_end" }
-  | { kind: "message_end", finish_reason: FinishReason }
+  | { kind: "message_end", finish_reason: FinishReason, usage: Usage | null }
 ```
 
 In `block_start`, `block` is a `Block` in its initial form:
@@ -529,7 +559,8 @@ order:
 - `text_delta` appends its `text` to the current (text) block's `text`.
 - `args_delta` appends its `args` to the current (tool_call) block's `args`.
 - `block_end` finalizes the current block.
-- `message_end`'s `finish_reason` becomes the reply's `finish_reason`.
+- `message_end`'s `finish_reason` becomes the reply's `finish_reason`,
+  and its `usage` becomes the reply's `usage`.
 
 **produce.** Each canonical type for which `Stream<T>` is defined also
 has a *produce* arrow that lifts a value into the canonical singleton
@@ -549,7 +580,8 @@ stream that consumes back to it. The arrow is named
   - if `b` is an `error` block, no delta event (the block is complete
     at `block_start`);
   - one `block_end`;
-- one `message_end` whose `finish_reason` is `r.finish_reason`.
+- one `message_end` whose `finish_reason` is `r.finish_reason` and whose
+  `usage` is `r.usage`.
 
 By construction,
 `consume_luv_stream_reply(produce_luv_stream_reply(r)) = r` for every
@@ -651,7 +683,8 @@ once published in a spec version, is never renamed or repurposed.
 | `shape.block.tool_call` | tool_call variant has `{kind, id, name, args}` with correct types |
 | `shape.block.tool_result` | tool_result variant has `{kind, call_id, text}` with correct types |
 | `shape.block.error` | error variant has `{kind, category, message, details}` with correct types and `category` is a known `ErrorCategory` value |
-| `shape.reply.fields` | Reply has `{message, finish_reason}` with correct types |
+| `shape.reply.fields` | Reply has `{message, finish_reason, usage}` with correct types (`usage` is a Usage object or `null`) |
+| `shape.reply.usage` | When `usage` is non-null it has `{provider, model, raw}`; `provider` and `model` are strings (the `raw` shape is morphism-defined and not checked by the universal validator) |
 | `shape.reply.assistant_role` | Reply.message.role is exactly `assistant` |
 | `shape.reply.content_restriction` | Reply.message.content contains only text, tool_call, or error blocks (no tool_result) |
 | `shape.node.fields` | Node has `{id, parent_id, message}` with correct types |
