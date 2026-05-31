@@ -16,7 +16,9 @@
 	// Features to add to the dev container. More info: https://containers.dev/features.
 	// "features": {},
 	// Use 'forwardPorts' to make a list of ports inside the container available locally.
-	"forwardPorts": [3000],
+	"forwardPorts": [
+		3000
+	],
 	// Run once after the container is first created — installs npm deps so
 	// the JS package is ready to test immediately on first open.
 	"postCreateCommand": "cd lib/js && bun install",
@@ -26,8 +28,7 @@
 		"vscode": {
 			"extensions": [
 				"GitHub.copilot",
-				"GitHub.copilot-chat",
-				"ziglang.vscode-zig"
+				"GitHub.copilot-chat"
 			],
 			"settings": {
 				"terminal.integrated.defaultProfile.linux": "bash"
