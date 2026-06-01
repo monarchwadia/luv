@@ -145,6 +145,7 @@
       };
 
       let recording = false;
+      let sessionId = null;     // names the outputs/<sessionId>.jsonl snapshot log
       let finalTranscript = "";
       let lastMermaid = "";      // last source we sent to mermaid (good or not)
       let lastGoodMermaid = "";  // last source that actually rendered
@@ -189,7 +190,11 @@
           const res = await fetch("/diagram", {
             method: "POST",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ transcript: finalTranscript, previous: lastGoodMermaid }),
+            body: JSON.stringify({
+              transcript: finalTranscript,
+              previous: lastGoodMermaid,
+              session: sessionId,
+            }),
           });
           const data = await res.json();
           if (data.error) {
@@ -248,12 +253,23 @@
         return rec;
       }
 
+      // A fresh, sortable, filesystem-safe id per recording → its own log file.
+      function makeSessionId() {
+        const d = new Date();
+        const p = (n) => String(n).padStart(2, "0");
+        const stamp =
+          `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
+          `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+        return `${stamp}-${Math.random().toString(36).slice(2, 6)}`;
+      }
+
       function startRecording() {
         if (!SR) {
           els.status.textContent = "Web Speech API unavailable — use Chrome";
           alert("This browser has no Web Speech API. Open in Chrome.");
           return;
         }
+        sessionId = makeSessionId();
         recognition = buildRecognition();
         recording = true;
         els.record.classList.add("live");

@@ -8,6 +8,7 @@
 //
 //   bun server.ts        (set OPENAI_API_KEY first — see README)
 
+import { appendFile, mkdir } from "node:fs/promises";
 import { LUV_SPEC_VERSION, LuvError, openaiClient } from "luv";
 import type { Conversation } from "luv";
 
@@ -83,6 +84,50 @@ function stripFences(s: string): string {
   return (fenced ? fenced[1]! : s).trim();
 }
 
+// ---------- snapshot persistence ----------
+//
+// Every diagram update is appended to outputs/<session>.jsonl as one line.
+// The file is an ordered, append-only log of how the diagram evolved from
+// the growing transcript — replay it forward for "time travel", or feed the
+// whole thing to an LLM for after-the-fact analysis. The line order IS the
+// sequence; `seq` and `ts` are conveniences.
+
+const OUTPUTS_DIR = new URL("./outputs/", import.meta.url);
+await mkdir(OUTPUTS_DIR, { recursive: true });
+
+const seqBySession = new Map<string, number>();
+
+// Reject anything that isn't a plain slug, so `session` can't escape outputs/.
+function safeSession(id: unknown): string | null {
+  return typeof id === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(id) ? id : null;
+}
+
+async function saveSnapshot(snapshot: {
+  session: string;
+  transcript: string;
+  previous: string;
+  mermaid: string;
+}): Promise<void> {
+  const seq = (seqBySession.get(snapshot.session) ?? 0) + 1;
+  seqBySession.set(snapshot.session, seq);
+
+  // Stamp here, not in the request handler, so every line carries a time.
+  const line = JSON.stringify({
+    seq,
+    ts: new Date().toISOString(),
+    transcript: snapshot.transcript,
+    previous: snapshot.previous,
+    mermaid: snapshot.mermaid,
+  });
+
+  const file = new URL(`./${snapshot.session}.jsonl`, OUTPUTS_DIR);
+  try {
+    await appendFile(file, line + "\n");
+  } catch (err) {
+    console.error(`failed to write snapshot for ${snapshot.session}:`, err);
+  }
+}
+
 // ---------- server ----------
 
 const html = Bun.file(new URL("./index.html", import.meta.url));
@@ -97,15 +142,20 @@ const server = Bun.serve({
     }
 
     if (req.method === "POST" && url.pathname === "/diagram") {
-      let body: { transcript?: string; previous?: string };
+      let body: { transcript?: string; previous?: string; session?: string };
       try {
-        body = (await req.json()) as { transcript?: string; previous?: string };
+        body = (await req.json()) as {
+          transcript?: string;
+          previous?: string;
+          session?: string;
+        };
       } catch {
         return Response.json({ error: "invalid JSON body" }, { status: 400 });
       }
 
       const transcript = (body.transcript ?? "").trim();
       const previous = body.previous ?? "";
+      const session = safeSession(body.session);
 
       try {
         const reply = await client.send(buildConversation(transcript, previous), { model: MODEL });
@@ -113,7 +163,11 @@ const server = Bun.serve({
           .filter((b): b is Extract<typeof b, { kind: "text" }> => b.kind === "text")
           .map((b) => b.text)
           .join("");
-        return Response.json({ mermaid: stripFences(text) });
+        const mermaidSrc = stripFences(text);
+        if (session) {
+          await saveSnapshot({ session, transcript, previous, mermaid: mermaidSrc });
+        }
+        return Response.json({ mermaid: mermaidSrc });
       } catch (err) {
         if (err instanceof LuvError) {
           return Response.json(

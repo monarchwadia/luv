@@ -21,7 +21,7 @@
 	],
 	// Run once after the container is first created — installs npm deps so
 	// the JS package is ready to test immediately on first open.
-	"postCreateCommand": "cd lib/js && bun install",
+	// "postCreateCommand": "cd lib/js && bun install",
 	// Codespaces-specific secrets are exposed to the container as env vars.
 	// Set OPENAI_API_KEY and ANTHROPIC_API_KEY at github.com/USER/luv/settings/secrets/codespaces.
 	"customizations": {

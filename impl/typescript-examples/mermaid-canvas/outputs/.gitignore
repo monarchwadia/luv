@@ -1,0 +1,4 @@
+# Snapshot logs are debugging/analysis artifacts, not source. Keep the
+# directory in git, ignore everything written into it.
+*
+!.gitignore

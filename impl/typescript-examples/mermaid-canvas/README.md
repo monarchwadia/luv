@@ -65,6 +65,33 @@ mermaid.render ──▶ SVG in the viewer
 - If the model emits syntax that doesn't parse yet, the last good render
   stays on screen and a small warning appears.
 
+## Snapshots (time travel + later analysis)
+
+Every diagram update is appended to `outputs/<session>.jsonl` — one JSON
+object per line, in the order it happened. A new `<session>` id is minted
+each time you click **Record** (e.g. `20260531-143000-a4f9`), so each
+recording gets its own log.
+
+Each line:
+
+```json
+{
+  "seq": 2,
+  "ts": "2026-05-31T19:45:36.314Z",
+  "transcript": "full transcript at this point…",
+  "previous": "the diagram we asked the model to evolve",
+  "mermaid": "flowchart TD\n  A[Login] --> B[Check DB]\n  …"
+}
+```
+
+Because it's an ordered, append-only log, you can **replay it forward**
+to "time travel" through how the diagram grew, and you can hand the whole
+file to an LLM to analyze the conversation after the fact. The line order
+*is* the sequence; `seq`/`ts` are conveniences.
+
+The `outputs/` directory is kept in git but its contents are gitignored —
+snapshots are debugging artifacts, not source.
+
 ## Notes / knobs
 
 - **Chrome only** for speech — the Web Speech API isn't in Firefox/Safari.
