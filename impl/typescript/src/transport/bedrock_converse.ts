@@ -48,7 +48,7 @@ function policyFor(config: BedrockClientConfig, category: ErrorCategory): ErrorP
 // ---------- SigV4 Signing ----------
 
 async function sha256(data: Uint8Array): Promise<Uint8Array> {
-  const buf = await crypto.subtle.digest("SHA-256", data);
+  const buf = await crypto.subtle.digest("SHA-256", data as ArrayBufferView<ArrayBuffer>);
   return new Uint8Array(buf);
 }
 
@@ -59,8 +59,8 @@ function hex(data: Uint8Array): string {
 }
 
 async function hmacSha256(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey("raw", key, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
-  const sig = await crypto.subtle.sign("HMAC", k, data);
+  const k = await crypto.subtle.importKey("raw", key as ArrayBufferView<ArrayBuffer>, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign("HMAC", k, data as ArrayBufferView<ArrayBuffer>);
   return new Uint8Array(sig);
 }
 
