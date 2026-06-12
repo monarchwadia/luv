@@ -14,10 +14,18 @@ Status legend: **shipped** · **next** · **planned** · **deferred**
 
 ## Next provider verticals
 
-- **Anthropic morphism + transport** — **next**
+- ~~**Anthropic morphism + transport**~~ — **shipped**
   - Spec: `spec/morphisms/anthropic_messages/{anthropic_messages.md, transport.md}`
   - Impl: `impl/typescript/src/{morphisms,transport}/anthropic_messages.ts`
   - The first portability demo — same conversation, two providers.
+- ~~**Bedrock Converse morphism**~~ — **shipped**
+  - Spec: `spec/morphisms/bedrock_converse/bedrock_converse.md`
+  - Impl: `impl/typescript/src/{morphisms,transport}/bedrock_converse.ts`
+  - Targets AWS Bedrock Converse API — one morphism covering all chat
+    models on Bedrock (Claude, Llama, Mistral, Nova, etc.).
+  - No transport spec (SigV4 signing + event-stream decoding are
+    impl-level concerns, not contract-grade).
+  - 16 bench cases, 11/11 smoke.
 - **Gemini morphism + transport** — **planned**
   - After Anthropic. Different enough wire shape to validate the spec
     where two morphisms can't.

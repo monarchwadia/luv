@@ -39,10 +39,11 @@ const r2 = await anthropic.send({ conversation: conv });  // same conversation, 
 conv = append(conv, r2.message);
 ```
 
-> **Status:** OpenAI morphism + transport ship today (bench 27/27 green).
-> Anthropic is next, Gemini after. The portability *property* is true of the
-> design now; the second morphism makes it demonstrated. npm package not yet
-> published — work against [`impl/typescript/`](impl/typescript/) for now.
+> **Status:** Three morphisms shipped — OpenAI, Anthropic, and AWS Bedrock
+> Converse (bench 61/61 green, smoke 11/11). The portability property is
+> demonstrated: same conversation, three providers, zero adapter code.
+> npm package not yet published — work against
+> [`impl/typescript/`](impl/typescript/) for now.
 
 ---
 
@@ -100,8 +101,8 @@ runs on Bun and any modern runtime.
 
 ```bash
 cd impl/typescript
-bun test        # bench: 27 cases, no network
-bun run smoke   # end-to-end live test (needs OPENAI_API_KEY)
+bun test        # bench: 61 cases, no network
+bun run smoke   # end-to-end live test (needs API keys)
 ```
 
 `OPENAI_API_KEY` is read from `/workspaces/luv/.env` or the process env.
@@ -127,6 +128,7 @@ belong above luv.
 - **[VISION.md](VISION.md)** — what luv is, who it's for, the demos.
 - **[spec/SPEC.md](spec/SPEC.md)** — canonical types, laws, conformance contract (source of truth).
 - **[spec/morphisms/openai_chat/](spec/morphisms/openai_chat/)** — first worked morphism + transport.
+- **[spec/morphisms/bedrock_converse/](spec/morphisms/bedrock_converse/)** — AWS Bedrock Converse morphism.
 - **[DECISIONS.md](DECISIONS.md)** — design decisions and rejected paths.
 - **[ROADMAP.md](ROADMAP.md)** — what's shipped and what's next.
 - **[AGENTS.md](AGENTS.md)** — rules for AI agents (and humans) contributing to luv.

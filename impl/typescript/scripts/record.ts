@@ -43,6 +43,15 @@ import {
   anthropic_http_stream_to_luv_stream,
 } from "../src/transport/anthropic_messages.js";
 
+import {
+  bedrock_response_to_luv_reply,
+  bedrock_stream_to_luv_stream,
+} from "../src/morphisms/bedrock_converse.js";
+import {
+  signRequest,
+  decodeAllFrames,
+} from "../src/transport/bedrock_converse.js";
+
 const SPEC_ROOT = join(import.meta.dir, "..", "..", "..", "spec");
 const ENV_PATH = join(import.meta.dir, "..", "..", "..", ".env");
 
@@ -139,6 +148,17 @@ const PROVIDERS: Record<string, ProviderHooks> = {
     httpResponseToReply: anthropic_http_response_to_luv_reply,
     httpStreamToStream: anthropic_http_stream_to_luv_stream,
   },
+  bedrock_converse: {
+    apiKeyEnv: "AWS_ACCESS_KEY_ID",
+    url: "", // not used; Bedrock has custom dispatch
+    buildHeaders: () => ({}),
+    contentTypeStream: "application/vnd.amazon.eventstream",
+    parseSSE: () => [],
+    responseToReply: (r: unknown) => bedrock_response_to_luv_reply(r, ""),
+    streamToStream: (e: unknown[]) => bedrock_stream_to_luv_stream(e, ""),
+    httpResponseToReply: () => ({ message: { role: "assistant" as const, content: [] }, finish_reason: "end_turn" as const, usage: null }),
+    httpStreamToStream: () => [],
+  },
 };
 
 // ---------- Case discovery ----------
@@ -220,6 +240,12 @@ async function processCase(c: CaseRef): Promise<void> {
     return verifyTransportRequestShape(c, provider, apiKey);
   }
 
+  // Bedrock cases: luv_conversation_to_bedrock_request doesn't hit a live API
+  // (model_id is in the URL, not the body). Skip request-shape verification.
+  if (c.arrow === "luv_conversation_to_bedrock_request") {
+    return; // synthetic case; not refreshable via API.
+  }
+
   // Refresh-fixture cases.
   const recordPath = join(c.dir, "record.json");
   if (!existsSync(recordPath)) return; // synthetic; not refreshable.
@@ -241,6 +267,10 @@ async function processCase(c: CaseRef): Promise<void> {
     case "openai_http_stream_to_luv_stream":
     case "anthropic_http_stream_to_luv_stream":
       return refreshTransportStream(c, provider, apiKey, recordMeta.request);
+    case "bedrock_response_to_luv_reply":
+      return refreshBedrockResponse(c, recordMeta.request);
+    case "bedrock_stream_to_luv_stream":
+      return refreshBedrockStream(c, recordMeta.request);
     default:
       console.log(`  skip (unknown arrow): ${c.morphism}/${c.arrow}/${c.slug}`);
       skipped++;
@@ -426,6 +456,71 @@ async function refreshTransportStream(
   console.log(
     `  ↻ ${c.morphism}/${c.arrow}/${c.slug} (status ${res.status})`,
   );
+}
+
+// ---------- Bedrock refresh ----------
+
+function getBedrockConfig() {
+  const region = ENV.AWS_REGION || "us-east-1";
+  return {
+    region,
+    access_key_id: ENV.AWS_ACCESS_KEY_ID || "",
+    secret_access_key: ENV.AWS_SECRET_ACCESS_KEY || "",
+    session_token: ENV.AWS_SESSION_TOKEN || undefined,
+  };
+}
+
+async function refreshBedrockResponse(
+  c: CaseRef,
+  request: Record<string, unknown>,
+): Promise<void> {
+  if (VERIFY_ONLY) return;
+  const config = getBedrockConfig();
+  if (!config.access_key_id) { skipped++; return; }
+  const modelId = (request as { model_id?: string }).model_id || "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
+  const body = JSON.stringify(request.body ?? request);
+  const url = `https://bedrock-runtime.${config.region}.amazonaws.com/model/${modelId}/converse`;
+  const headers = await signRequest("POST", url, { "content-type": "application/json" }, body, config);
+  const res = await fetch(url, { method: "POST", headers, body });
+  if (res.status !== 200) {
+    fail++;
+    const text = await res.text();
+    console.log(`  ✗ ${c.morphism}/${c.arrow}/${c.slug} — HTTP ${res.status}: ${text.slice(0, 200)}`);
+    return;
+  }
+  const json = await res.json();
+  const reply = bedrock_response_to_luv_reply(json, modelId);
+  writeFileSync(join(c.dir, "input.json"), stringify({ response: json, model_id: modelId }) + "\n");
+  writeFileSync(join(c.dir, "expected.json"), stringify(encodeReply(reply)) + "\n");
+  written++;
+  console.log(`  ↻ ${c.morphism}/${c.arrow}/${c.slug}`);
+}
+
+async function refreshBedrockStream(
+  c: CaseRef,
+  request: Record<string, unknown>,
+): Promise<void> {
+  if (VERIFY_ONLY) return;
+  const config = getBedrockConfig();
+  if (!config.access_key_id) { skipped++; return; }
+  const modelId = (request as { model_id?: string }).model_id || "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
+  const body = JSON.stringify(request.body ?? request);
+  const url = `https://bedrock-runtime.${config.region}.amazonaws.com/model/${modelId}/converse-stream`;
+  const headers = await signRequest("POST", url, { "content-type": "application/json" }, body, config);
+  const res = await fetch(url, { method: "POST", headers, body });
+  if (res.status !== 200) {
+    fail++;
+    const text = await res.text();
+    console.log(`  ✗ ${c.morphism}/${c.arrow}/${c.slug} — HTTP ${res.status}: ${text.slice(0, 200)}`);
+    return;
+  }
+  const buf = new Uint8Array(await res.arrayBuffer());
+  const events = decodeAllFrames(buf);
+  const stream = bedrock_stream_to_luv_stream(events, modelId);
+  writeFileSync(join(c.dir, "input.json"), stringify({ events, model_id: modelId }) + "\n");
+  writeFileSync(join(c.dir, "expected.json"), stringify(encodeStreamReply(stream)) + "\n");
+  written++;
+  console.log(`  ↻ ${c.morphism}/${c.arrow}/${c.slug}`);
 }
 
 // ---------- Main ----------

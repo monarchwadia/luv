@@ -379,3 +379,112 @@ envelope through `consume`/`produce` unchanged (so L4 still holds).
 - *Omit-when-null encoding* — `usage` is present-but-nullable so the
   canonical key order stays fixed and the field is explicit, consistent
   with the rest of the canonical JSON form.
+
+---
+
+## Bedrock Converse API vs. InvokeModel
+
+**Considered:**
+
+- Target each model's native API via `InvokeModel` (model-specific
+  request/response formats — Anthropic Messages, Meta format, etc.).
+- Target the unified Bedrock Converse API (one wire format for all
+  chat models).
+
+**Chosen:** Converse API.
+
+**Why:** One morphism covers all chat-capable models on Bedrock
+(Claude, Llama, Mistral, Nova, DeepSeek, Qwen, Cohere). InvokeModel
+would require a separate morphism per model family — duplicating
+work that Bedrock already does as a normalization layer. The Converse
+API is AWS's explicit recommendation for new integrations.
+
+---
+
+## No transport spec for Bedrock
+
+**Considered:** Writing a transport spec (`transport.md`) as done for
+OpenAI and Anthropic.
+
+**Rejected.**
+
+**Why:** Bedrock's transport has two complexities absent from
+OpenAI/Anthropic: AWS SigV4 request signing (a multi-step
+cryptographic ceremony) and binary event-stream framing (a non-text
+wire format). Both are inherently language-specific — they depend on
+crypto primitives and binary buffer APIs. Transport specs are
+reference-grade (not contract-grade) anyway, so the value of
+specifying these is low. The morphism arrows remain pure JSON
+transforms; transport is the impl's problem.
+
+---
+
+## SigV4 signing as impl-level concern
+
+**Considered:**
+
+- Document SigV4 algorithm in the spec (prescriptive).
+- Require a `sign_request` callback in config (injected).
+- Implement signing internally in the transport client (chosen).
+
+**Chosen:** The TS reference impl implements SigV4 internally using
+Web Crypto (`crypto.subtle`). The morphism spec doesn't mention
+signing.
+
+**Why:** Signing is transport, not morphism. The morphism arrows are
+auth-free (they produce a JSON request body, not an HTTP request).
+Each language impl uses its own crypto primitives (Python `hashlib`,
+Go `crypto/hmac`, etc.). There's nothing language-agnostic to
+specify.
+
+---
+
+## model_id passed as parameter to response/stream arrows
+
+**Considered:**
+
+- Omit model from the usage envelope for Bedrock.
+- Require model_id as a parameter to the response and stream arrows.
+
+**Chosen:** Pass `model_id` explicitly.
+
+**Why:** Bedrock does not echo the model identifier in the response
+body (it appears only in the request URL path). The usage envelope
+`{provider, model, raw}` needs it for pricability. OpenAI and
+Anthropic include model in their responses, so their arrows extract
+it directly — Bedrock cannot. The parameter makes this explicit
+rather than requiring the caller to patch the result after the fact.
+
+---
+
+## Event-stream binary framing: CRC32 validation optional
+
+**Considered:** Requiring CRC32 validation in the morphism spec.
+
+**Rejected.**
+
+**Why:** CRC32 is integrity protection at the transport layer, not
+semantic content. The morphism's streaming arrow operates on
+pre-decoded JSON event objects. Whether the transport validates
+frame checksums is an implementation quality decision. The bench
+tests use JSON arrays as input, so CRC never enters the conformance
+picture.
+
+---
+
+## Bedrock system field: array of blocks vs. concatenated string
+
+**Considered:**
+
+- Concatenate all luv system messages into a single string (like the
+  Anthropic morphism does).
+- Emit each system message as a separate `{text}` entry in the
+  `system` array (chosen).
+
+**Chosen:** Array of separate blocks.
+
+**Why:** Bedrock's `system` field accepts an array of
+`SystemContentBlock` objects. Preserving per-message granularity is
+more faithful to the source data and avoids the concatenation
+boundary-loss that the Anthropic morphism documents as a
+homomorphism exception. The array form is strictly more expressive.
