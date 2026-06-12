@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","content":[{"kind":"text","text":"The capital of France is Paris."}]},"finish_reason":"end_turn","usage":{"provider":"bedrock_converse","model":"anthropic.claude-3-haiku-20240307-v1:0","raw":{"inputTokens":12,"outputTokens":8,"totalTokens":20}}}

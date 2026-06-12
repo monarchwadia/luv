@@ -1,0 +1,1 @@
+{"response":{"output":{"message":{"role":"assistant","content":[{"text":"Let me check the weather."},{"toolUse":{"toolUseId":"toolu_abc123","name":"get_weather","input":{"city":"SF"}}}]}},"stopReason":"tool_use","usage":{"inputTokens":25,"outputTokens":18,"totalTokens":43},"metrics":{"latencyMs":450}},"model_id":"anthropic.claude-3-haiku-20240307-v1:0"}

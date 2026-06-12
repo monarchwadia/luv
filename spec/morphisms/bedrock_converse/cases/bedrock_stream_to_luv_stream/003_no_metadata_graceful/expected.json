@@ -1,0 +1,1 @@
+[{"kind":"message_start"},{"kind":"block_start","block":{"kind":"text","text":""}},{"kind":"text_delta","text":"Partial response"},{"kind":"block_end"},{"kind":"message_end","finish_reason":"end_turn","usage":null}]

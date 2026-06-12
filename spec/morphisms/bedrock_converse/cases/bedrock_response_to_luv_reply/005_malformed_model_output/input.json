@@ -1,0 +1,1 @@
+{"response":{"output":{"message":{"role":"assistant","content":[{"text":""}]}},"stopReason":"malformed_model_output","usage":{"inputTokens":10,"outputTokens":1,"totalTokens":11},"metrics":{"latencyMs":80}},"model_id":"meta.llama3-8b-instruct-v1:0"}

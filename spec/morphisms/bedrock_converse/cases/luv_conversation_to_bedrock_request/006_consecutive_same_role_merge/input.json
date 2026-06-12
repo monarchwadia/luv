@@ -1,0 +1,1 @@
+{"conversation":{"spec_version":"1.0","nodes":[{"id":"n1","parent_id":null,"message":{"role":"user","content":[{"kind":"text","text":"Hello"}]}},{"id":"n2","parent_id":"n1","message":{"role":"user","content":[{"kind":"text","text":" there"}]}}]},"opts":{"model_id":"anthropic.claude-3-haiku-20240307-v1:0"}}

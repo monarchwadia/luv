@@ -1,0 +1,1 @@
+{"response":{"output":{"message":{"role":"assistant","content":[{"text":"I'm sorry, I can't help with that."}]}},"stopReason":"guardrail_intervened","usage":{"inputTokens":15,"outputTokens":10,"totalTokens":25},"metrics":{"latencyMs":150}},"model_id":"amazon.nova-pro-v1:0"}

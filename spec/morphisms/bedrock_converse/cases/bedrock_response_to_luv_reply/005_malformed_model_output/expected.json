@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","content":[{"kind":"text","text":""}]},"finish_reason":"error","usage":{"provider":"bedrock_converse","model":"meta.llama3-8b-instruct-v1:0","raw":{"inputTokens":10,"outputTokens":1,"totalTokens":11}}}

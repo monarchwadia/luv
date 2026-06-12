@@ -1,0 +1,1 @@
+{"messages":[{"role":"user","content":[{"text":"What's the weather in SF?"}]},{"role":"assistant","content":[{"toolUse":{"toolUseId":"toolu_1","name":"get_weather","input":{"city":"SF"}}}]},{"role":"user","content":[{"toolResult":{"toolUseId":"toolu_1","content":[{"text":"65 and sunny"}]}}]}]}

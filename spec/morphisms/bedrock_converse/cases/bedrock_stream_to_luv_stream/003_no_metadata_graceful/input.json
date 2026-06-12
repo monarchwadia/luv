@@ -1,0 +1,1 @@
+{"events":[{"messageStart":{"role":"assistant"}},{"contentBlockDelta":{"contentBlockIndex":0,"delta":{"text":"Partial response"}}},{"contentBlockStop":{"contentBlockIndex":0}},{"messageStop":{"stopReason":"end_turn"}}],"model_id":"anthropic.claude-3-haiku-20240307-v1:0"}

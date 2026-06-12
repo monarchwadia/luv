@@ -1,0 +1,1 @@
+[{"kind":"message_start"},{"kind":"block_start","block":{"kind":"text","text":""}},{"kind":"text_delta","text":"This is a long response that gets cut"},{"kind":"block_end"},{"kind":"message_end","finish_reason":"max_tokens","usage":{"provider":"bedrock_converse","model":"meta.llama3-70b-instruct-v1:0","raw":{"inputTokens":10,"outputTokens":50,"totalTokens":60}}}]

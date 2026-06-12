@@ -1,0 +1,1 @@
+{"response":{"output":{"message":{"role":"assistant","content":[{"text":"Hello!"}]}},"stopReason":"end_turn","metrics":{"latencyMs":100}},"model_id":"meta.llama3-8b-instruct-v1:0"}

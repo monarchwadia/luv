@@ -1,0 +1,1 @@
+{"message":{"role":"assistant","content":[{"kind":"text","text":"I'm sorry, I can't help with that."}]},"finish_reason":"content_filter","usage":{"provider":"bedrock_converse","model":"amazon.nova-pro-v1:0","raw":{"inputTokens":15,"outputTokens":10,"totalTokens":25}}}
