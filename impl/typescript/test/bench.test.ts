@@ -35,6 +35,11 @@ import {
   anthropic_http_stream_to_luv_stream,
   type AnthropicClientConfig,
 } from "../src/transport/anthropic_messages.js";
+import {
+  luv_conversation_to_bedrock_request,
+  bedrock_response_to_luv_reply,
+  bedrock_stream_to_luv_stream,
+} from "../src/morphisms/bedrock_converse.js";
 
 function encodeHTTPRequest(req: HTTPRequest): unknown {
   return {
@@ -143,6 +148,23 @@ const arrows: Record<string, ArrowFn> = {
         anthropic_http_stream_to_luv_stream(input as HTTPResponse),
       ),
     ),
+
+  luv_conversation_to_bedrock_request: (input) => {
+    const w = input as { conversation: never; opts: never };
+    return stringify(
+      luv_conversation_to_bedrock_request(w.conversation, w.opts),
+    );
+  },
+
+  bedrock_response_to_luv_reply: (input) => {
+    const w = input as { response: unknown; model_id: string };
+    return stringify(encodeReply(bedrock_response_to_luv_reply(w.response, w.model_id)));
+  },
+
+  bedrock_stream_to_luv_stream: (input) => {
+    const w = input as { events: unknown[]; model_id: string };
+    return stringify(encodeStreamReply(bedrock_stream_to_luv_stream(w.events, w.model_id)));
+  },
 };
 
 // Walk a cases root (either spec/cases or spec/morphisms/*/cases) and
