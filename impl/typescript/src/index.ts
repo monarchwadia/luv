@@ -64,3 +64,9 @@ export {
   type AnthropicClient,
   type AnthropicClientConfig,
 } from "./transport/anthropic_messages.js";
+
+export {
+  bedrockClient,
+  type BedrockClient,
+  type BedrockClientConfig,
+} from "./transport/bedrock_converse.js";

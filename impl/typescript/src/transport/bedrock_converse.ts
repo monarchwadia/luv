@@ -87,6 +87,12 @@ export async function signRequest(
 
   const payloadHash = hex(await sha256(enc.encode(body)));
 
+  // SigV4 canonical URI: URI-encode each path segment, preserving '/'.
+  const canonicalUri = parsed.pathname
+    .split("/")
+    .map((seg) => encodeURIComponent(seg))
+    .join("/");
+
   const signedHeaders: Record<string, string> = {
     ...headers,
     host: parsed.host,
@@ -101,8 +107,8 @@ export async function signRequest(
 
   const canonicalRequest = [
     method,
-    parsed.pathname,
-    parsed.search ? parsed.search.slice(1) : "",
+    canonicalUri,
+    "",
     canonicalHeaders,
     signedHeadersStr,
     payloadHash,
@@ -143,18 +149,40 @@ function crc32(data: Uint8Array, initial = 0): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-export function decodeEventStreamFrame(buffer: Uint8Array, offset: number): { payload: Uint8Array; length: number } | null {
-  if (buffer.length - offset < 12) return null; // need at least prelude + prelude CRC
+export function decodeEventStreamFrame(buffer: Uint8Array, offset: number): { payload: Uint8Array; eventType: string; length: number } | null {
+  if (buffer.length - offset < 12) return null;
   const view = new DataView(buffer.buffer, buffer.byteOffset + offset);
   const totalLength = view.getUint32(0);
-  if (buffer.length - offset < totalLength) return null; // incomplete frame
+  if (buffer.length - offset < totalLength) return null;
 
   const headersLength = view.getUint32(4);
-  // Skip prelude CRC validation for simplicity (optional hardening).
-  const payloadOffset = 12 + headersLength; // 8 prelude + 4 prelude CRC + headers
+  const headersStart = 12; // 8 prelude + 4 prelude CRC
+  const headersEnd = headersStart + headersLength;
+
+  // Parse headers to extract :event-type.
+  let eventType = "";
+  let hOff = offset + headersStart;
+  while (hOff < offset + headersEnd) {
+    const nameLen = buffer[hOff]; hOff++;
+    const name = new TextDecoder().decode(buffer.slice(hOff, hOff + nameLen)); hOff += nameLen;
+    const type = buffer[hOff]; hOff++;
+    if (type === 7) { // string type
+      const valLen = (buffer[hOff] << 8) | buffer[hOff + 1]; hOff += 2;
+      const val = new TextDecoder().decode(buffer.slice(hOff, hOff + valLen)); hOff += valLen;
+      if (name === ":event-type") eventType = val;
+    } else if (type === 4) { // timestamp (8 bytes)
+      hOff += 8;
+    } else if (type === 8) { // uuid (16 bytes)
+      hOff += 16;
+    } else {
+      break; // unknown header type, stop parsing
+    }
+  }
+
+  const payloadOffset = headersEnd;
   const payloadLength = totalLength - payloadOffset - 4; // subtract message CRC
   const payload = buffer.slice(offset + payloadOffset, offset + payloadOffset + payloadLength);
-  return { payload, length: totalLength };
+  return { payload, eventType, length: totalLength };
 }
 
 export function decodeAllFrames(buffer: Uint8Array): unknown[] {
@@ -164,10 +192,11 @@ export function decodeAllFrames(buffer: Uint8Array): unknown[] {
     const frame = decodeEventStreamFrame(buffer, offset);
     if (!frame) break;
     offset += frame.length;
-    if (frame.payload.length === 0) continue;
+    if (frame.payload.length === 0 || !frame.eventType) continue;
     try {
-      const text = new TextDecoder().decode(frame.payload);
-      events.push(JSON.parse(text));
+      const parsed = JSON.parse(new TextDecoder().decode(frame.payload));
+      // Wrap in the event-type key so the morphism can process it.
+      events.push({ [frame.eventType]: parsed });
     } catch { /* skip non-JSON frames */ }
   }
   return events;
@@ -210,7 +239,7 @@ export function bedrockClient(config: BedrockClientConfig): BedrockClient {
   return {
     async send(conv, opts) {
       const body = stringify(luv_conversation_to_bedrock_request(conv, opts));
-      const url = `${baseUrl}/model/${encodeURIComponent(opts.model_id)}/converse`;
+      const url = `${baseUrl}/model/${opts.model_id}/converse`;
       const headers = await signRequest("POST", url, { "content-type": "application/json" }, body, config);
 
       const res = await fetch(url, { method: "POST", headers, body, signal: config.timeout_ms ? AbortSignal.timeout(config.timeout_ms) : undefined });
@@ -231,7 +260,7 @@ export function bedrockClient(config: BedrockClientConfig): BedrockClient {
 
     async *stream(conv, opts) {
       const body = stringify(luv_conversation_to_bedrock_request(conv, opts));
-      const url = `${baseUrl}/model/${encodeURIComponent(opts.model_id)}/converse-stream`;
+      const url = `${baseUrl}/model/${opts.model_id}/converse-stream`;
       const headers = await signRequest("POST", url, { "content-type": "application/json" }, body, config);
 
       const res = await fetch(url, { method: "POST", headers, body, signal: config.timeout_ms ? AbortSignal.timeout(config.timeout_ms) : undefined });
@@ -278,12 +307,12 @@ export function bedrockClient(config: BedrockClientConfig): BedrockClient {
           const frame = decodeEventStreamFrame(buffer, offset);
           if (!frame) break;
           offset += frame.length;
-          if (frame.payload.length === 0) continue;
+          if (frame.payload.length === 0 || !frame.eventType) continue;
           try {
-            const text = new TextDecoder().decode(frame.payload);
-            const evt = JSON.parse(text) as Record<string, unknown>;
+            const parsed = JSON.parse(new TextDecoder().decode(frame.payload));
+            const evt = { [frame.eventType]: parsed } as Record<string, unknown>;
             for (const e of processStreamEvent(evt, opts.model_id, openedBlocks, storedStopReason)) {
-              if (e._storeStop) { storedStopReason = e._storeStop; continue; }
+              if (e._storeStop !== undefined) { storedStopReason = e._storeStop || null; continue; }
               yield e.event!;
             }
           } catch { /* skip */ }
@@ -292,9 +321,7 @@ export function bedrockClient(config: BedrockClientConfig): BedrockClient {
       }
 
       // Graceful degradation if no metadata arrived.
-      if (storedStopReason !== null) {
-        // Check if message_end was already yielded by looking at storedStopReason being consumed.
-        // We use a simple flag approach: metadata handler clears storedStopReason.
+      if (storedStopReason !== null && storedStopReason !== "") {
         yield { kind: "message_end", finish_reason: mapStopReason(storedStopReason), usage: null };
       }
     },

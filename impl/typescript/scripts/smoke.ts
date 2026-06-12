@@ -12,9 +12,11 @@ import type { Conversation, Reply } from "../src/index.js";
 import {
   openaiClient,
   anthropicClient,
+  bedrockClient,
   LuvError,
   type OpenAIClient,
   type AnthropicClient,
+  type BedrockClient,
 } from "../src/index.js";
 
 const ENV_PATH = join(import.meta.dir, "..", "..", "..", ".env");
@@ -62,8 +64,8 @@ function assert(cond: boolean, msg: string) {
 
 interface ProviderUnderTest {
   name: string;
-  client: OpenAIClient | AnthropicClient;
-  badClient: OpenAIClient | AnthropicClient;
+  client: OpenAIClient | AnthropicClient | BedrockClient;
+  badClient: OpenAIClient | AnthropicClient | BedrockClient;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   sendOpts: any;
 }
@@ -166,6 +168,27 @@ if (ENV.ANTHROPIC_API_KEY) {
   });
 } else {
   console.log("(skipping anthropic_messages: ANTHROPIC_API_KEY not set)");
+}
+
+if (ENV.AWS_ACCESS_KEY_ID && ENV.AWS_SECRET_ACCESS_KEY) {
+  const region = ENV.AWS_REGION || "us-east-1";
+  providers.push({
+    name: "bedrock_converse",
+    client: bedrockClient({
+      region,
+      access_key_id: ENV.AWS_ACCESS_KEY_ID,
+      secret_access_key: ENV.AWS_SECRET_ACCESS_KEY,
+      session_token: ENV.AWS_SESSION_TOKEN || undefined,
+    }),
+    badClient: bedrockClient({
+      region,
+      access_key_id: "AKIAIOSFODNN7EXAMPLE",
+      secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+    }),
+    sendOpts: { model_id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0" },
+  });
+} else {
+  console.log("(skipping bedrock_converse: AWS_ACCESS_KEY_ID not set)");
 }
 
 console.log("Live smoke test\n");
