@@ -160,6 +160,16 @@ fits the language. *Explainer: two implementations in different languages
 interoperate iff they produce identical canonical JSON bytes for identical
 canonical inputs. Anything below the wire is out of scope.*
 
+Arrow signatures may include **context parameters** beyond the primary
+domain object when the provider's response does not carry information
+required to produce a complete luv value. For example, if a provider does
+not echo the model identifier in its response body, the morphism's
+response arrow declares `model_id` as an explicit parameter rather than
+embedding it in the domain type — this makes the dependency
+type-enforced and visible, not a silent runtime assumption. Each
+morphism spec declares its arrow signatures; uniformity across morphisms
+is not required.
+
 ```
     Implementation A                  Implementation B
     (e.g. Rust)                       (e.g. Python)
